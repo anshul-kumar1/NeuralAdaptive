@@ -1,39 +1,99 @@
-// background.js
-console.log('[NeuralAdaptive v2.2.0] background service worker loaded')
+// background.js - NeuralAdaptive v3.0.0
+console.log('[NeuralAdaptive v3.0.0] background service worker loaded')
 
 chrome.runtime.onInstalled.addListener(function () {
-    chrome.storage.local.get(['enabled', 'accuracyMode'], function (data) {
+    chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags'], function (data) {
         var patch = {}
+        var isDev = !chrome.runtime.getManifest().update_url
         if (typeof data.enabled === 'undefined') patch.enabled = false
         if (typeof data.accuracyMode === 'undefined') patch.accuracyMode = 'balanced'
+        if (!data.na_flags || typeof data.na_flags !== 'object') {
+            patch.na_flags = {
+                adaptive_kalman_v1: isDev,
+                intervention_hysteresis_v2: isDev,
+                calibration_quality_gates_v1: false,
+                line_aware_snap_v1: false,
+                drift_map_v1: false,
+                residual_fusion_v1: false
+            }
+        }
         if (Object.keys(patch).length > 0) chrome.storage.local.set(patch)
     })
 })
 
-chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+// ── Script injection helpers ──────────────────────────────────────────────────
+async function injectTracker(tabId) {
+    var baseUrl = chrome.runtime.getURL('mediapipe/face_mesh/')
 
-    if (message.type === 'INJECT_WEBGAZER') {
-        var tabId = sender && sender.tab ? sender.tab.id : null
-        var tabUrl = sender && sender.tab ? sender.tab.url || '' : ''
-        if (!tabId) {
-            sendResponse({ ok: false, error: 'No sender tab' })
-            return false
-        }
-        if (!/^https?:\/\//i.test(tabUrl)) {
-            sendResponse({ ok: false, error: 'Cannot inject on non-http(s) page: ' + tabUrl })
-            return false
-        }
-        chrome.scripting.executeScript({
+    // 1. Set base URL in MAIN world before face_mesh.js loads
+    await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: 'MAIN',
+        func: function (url) { window.__naFaceMeshBase = url },
+        args: [baseUrl]
+    })
+
+    // 2. Inject FaceMesh library into MAIN world
+    await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ['mediapipe/face_mesh/face_mesh.js'],
+        world: 'MAIN'
+    })
+
+    // 3. Inject iris tracker into MAIN world (reads __naFaceMeshBase, uses page camera)
+    await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ['iris-tracker.js'],
+        world: 'MAIN'
+    })
+}
+
+async function stopTracker(tabId) {
+    try {
+        await chrome.scripting.executeScript({
             target: { tabId: tabId },
-            files: ['webgazer.js'],
-            world: 'ISOLATED'
-        }).then(function () {
+            world: 'MAIN',
+            func: function () {
+                document.dispatchEvent(new CustomEvent('na-stop-tracking'))
+            }
+        })
+    } catch (e) { /* tab may have navigated away */ }
+}
+
+// ── Message router ────────────────────────────────────────────────────────────
+chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+    if (!message || !message.type) return false
+
+    if (message.type === 'START_TRACKING') {
+        var tabId = sender && sender.tab ? sender.tab.id : null
+        if (!tabId) { sendResponse({ ok: false, error: 'no tab' }); return false }
+        injectTracker(tabId).then(function () {
             sendResponse({ ok: true })
         }).catch(function (err) {
-            console.error('[NeuralAdaptive] webgazer inject failed:', err)
-            sendResponse({ ok: false, error: err.message })
+            console.error('[NeuralAdaptive] inject failed:', err)
+            sendResponse({ ok: false, error: err && err.message ? err.message : String(err) })
         })
         return true
+    }
+
+    if (message.type === 'STOP_TRACKING') {
+        var tabId = sender && sender.tab ? sender.tab.id : null
+        if (tabId) stopTracker(tabId)
+        sendResponse({ ok: true })
+        return false
+    }
+
+    if (message.type === 'STRESS_SCORE') {
+        var score = message.score
+        var tier = score < 0.3 ? 'CALM' : score < 0.6 ? 'ELEVATED' : 'OVERLOAD'
+        chrome.storage.local.set({
+            currentScore: score,
+            currentTier: tier,
+            signals: message.signals,
+            lastUpdated: Date.now()
+        })
+        sendResponse({ ok: true })
+        return false
     }
 
     if (message.type === 'SUMMARIZE_PARAGRAPH') {
@@ -45,20 +105,19 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
         return true
     }
 
-    if (message.type === 'STRESS_SCORE') {
-        var score = message.score
-        var signals = message.signals
-        var tier = score < 0.3 ? 'CALM' : score < 0.6 ? 'ELEVATED' : 'OVERLOAD'
-        chrome.storage.local.set({
-            currentScore: score,
-            currentTier: tier,
-            signals: signals,
-            lastUpdated: Date.now()
+    if (message.type === 'BREADCRUMB_SUMMARY') {
+        var prompt = 'The student is returning to this text after being distracted. ' +
+            'Summarize the key takeaway of the last 300 words in exactly 12 words, ' +
+            'starting with "You were just exploring..."\n\n' + message.text
+        callGemini(prompt).then(function (summary) {
+            sendResponse({ summary: summary })
+        }).catch(function (err) {
+            sendResponse({ summary: null, error: err.message })
         })
-        sendResponse({ ok: true })
-        return false
+        return true
     }
 
+    return false
 })
 
 var GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE'

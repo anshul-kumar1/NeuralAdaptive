@@ -1,7 +1,12 @@
-// content.js — NeuralAdaptive v2.3.0
-// Stability layer: GazeSmoother + DwellGrid + Princeton calibration wizard.
+﻿// content.js - NeuralAdaptive v3.0.0
+// Gaze source: MediaPipe FaceMesh iris tracking in offscreen document (PDR v3).
+// Receives GAZE_UPDATE from background; drives DwellGrid, stress scoring, interventions.
 
-console.log('[NeuralAdaptive v2.3.0] content.js loaded')
+// Safety shim: head-pose-layer.js is no longer loaded. Declares HeadPoseLayer as null
+// so legacy guarded references in runNosePoseCalibrationMode / runPoseStage don't throw.
+var HeadPoseLayer = null
+
+console.log('[NeuralAdaptive v3.0.0] content.js loaded')
 
 var CONFIG = {
     SEND_INTERVAL_MS:              1000,
@@ -10,19 +15,38 @@ var CONFIG = {
     SACCADE_HIGH_VELOCITY:         500,
     SAMPLE_BUFFER_SIZE:            90,
     REGRESSION_WINDOW:             20,
-    CALIBRATION_VERSION:           'princeton_v1',
+    CALIBRATION_VERSION:           'iris_v2',
+    POSE_CALIBRATION_VERSION:      'iris_pose_v1',
     CALIBRATION_CLICKS_PER_POINT:  5,
     VALIDATION_THRESHOLD_PX:       160,
     MAX_FORCED_RECALIBRATION_ATTEMPTS: 1,
-    GAZE_SMOOTHING_FACTOR:         0.15,   // low-pass α — lower = smoother/slower
+    GAZE_SMOOTHING_FACTOR:         0.15,   // low-pass Î± â€” lower = smoother/slower
     DWELL_THRESHOLD_MS:            1500,   // ms in same grid sector to fire dwell event
     GRID_COLS:                     3,
     GRID_ROWS:                     4,
+    INTERVENTION_MIN_READING_SCORE: 0.42,
+    INTERVENTION_MAX_DEGRADATION:   0.80,
+    INTERVENTION_MIN_MEAS_RATIO:    0.65,
+    INTERVENTION_QUIET_MS:          2200,
+    INTERVENTION_CONFIRM_TICKS:     2,
+    KALMAN_MEAS_NOISE_MIN:          15,
+    KALMAN_MEAS_NOISE_MAX:          140,
+    CAL_QUALITY_MAX_DEGRADATION:    0.65,
+    CAL_QUALITY_MIN_MEAS_RATIO:     0.75,
+    CAL_QUALITY_MAX_HEAD_SPEED:     9.0,
+    CAL_POINT_STDDEV_BALANCED:      24,
+    CAL_POINT_STDDEV_PRECISION:     16,
+    LINE_SNAP_RADIUS_PX:            42,
+    DRIFT_ANCHOR_BATCH:             12,
+    DRIFT_ANCHOR_MAX_RESIDUAL_PX:   120,
+    DRIFT_ANCHOR_QUALITY_READING:   0.60,
+    DRIFT_ANCHOR_QUALITY_DEGRAD:    0.50,
+    DRIFT_ANCHOR_QUALITY_MEAS:      0.80,
 }
 
 var ACCURACY_MODE = {
     balanced: {
-        alpha:                0.15,   // overridden by GazeSmoother; kept for legacy paths
+        alpha:                0.15,   // retained for outlier/validation config lookups
         outlierThresholdPx:   220,
         validationThresholdPx: 160,
     },
@@ -33,7 +57,7 @@ var ACCURACY_MODE = {
     },
 }
 
-// 5-point Princeton calibration wizard (TL → TR → Center → BL → BR)
+// 5-point Princeton calibration wizard (TL â†’ TR â†’ Center â†’ BL â†’ BR)
 var CAL_POINTS_5 = [
     { x: 5,  y: 5,  label: 'Top Left'     },
     { x: 95, y: 5,  label: 'Top Right'    },
@@ -57,34 +81,68 @@ var isBooting = false
 var isRunning = false
 var isCalibrating = false
 var activeAccuracyMode = 'balanced'
-var smoothedPoint = null       // legacy alias — kept so existing call-sites compile
+var smoothedPoint = null       // legacy alias â€” kept so existing call-sites compile
 var calibrationPromise = null
-var webgazerInitialized = false
-
-// ─── GazeSmoother ─────────────────────────────────────────────────────────────
-// Single-pole IIR low-pass filter.  α = 0.15 means each new frame contributes
-// 15% and the history 85%, yielding ~6-frame smoothing at 30 fps.
-var GazeSmoother = {
-    x:      null,
-    y:      null,
-
-    /** Feed raw WebGazer coordinates; returns smoothed {x, y}. */
-    update: function (rawX, rawY) {
-        if (this.x === null) {
-            this.x = rawX
-            this.y = rawY
-            return { x: rawX, y: rawY }
-        }
-        var a = CONFIG.GAZE_SMOOTHING_FACTOR
-        this.x = this.x * (1 - a) + rawX * a
-        this.y = this.y * (1 - a) + rawY * a
-        return { x: this.x, y: this.y }
-    },
-
-    reset: function () { this.x = null; this.y = null }
+var _gazeSmoothed = null   // IIR-smoothed gaze from offscreen
+var measurementHistory = []
+var interventionBlockedUntil = 0
+var degradationSpikeStreak = 0
+var interventionCandidateTier = null
+var interventionCandidateCount = 0
+var activeFlags = null
+var lastRawGaze = null
+var lastHeadMeta = { yaw: 0, pitch: 0, roll: 0, ipdRatio: 1, degradationScore: 0, isTrackerDegraded: false }
+var lastHeadMetaTs = 0
+var latestPrecisionLive = {
+    measurementRatio: 1,
+    readingScore: 0,
+    degradationScore: 0,
+    snapDistancePx: 0,
+    interventionBlocked: false,
+    ts: 0
 }
+var sessionMetrics = {
+    sessionId: String(Date.now()) + '_' + Math.floor(Math.random() * 1e6),
+    sessionStartTs: Date.now(),
+    jitterSamples: [],
+    lastFinalPoint: null,
+    lineSwitchTotal: 0,
+    lineSwitchSuspicious: 0,
+    interventionActivations: 0,
+    interventionFalseTriggers: 0,
+}
+var calibQuality = {
+    accepted: 0,
+    rejected: 0,
+    pointStddevs: [],
+}
+var lineSnapCache = { entries: [], ts: 0 }
+var lastLineId = null
+var lastSweepTs = 0
+var driftMap = { enabled: false, anchors: [], model: null, exploded: false, residualHistory: [] }
+var residualFusion = { sampleCount: 0, wx: null, wy: null, dim: 12, residualHistory: [] }
+var kalmanAdaptive = null
+var latestFrameState = null
+var lastSessionMirrorTs = 0
+var driftResetListenersBound = false
 
-// ─── GazeCursor ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Recovery Module state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+var LearningState = {
+    isDistracted:     false,
+    lastReadElement:  null,   // DOM node of last confirmed reading position
+    lastReadText:     '',     // text of that element (for Gemini)
+    pageTextHistory:  [],     // rolling array of viewport snapshots (max 3)
+    breadcrumbText:   null,   // pending Gemini response awaiting re-entry
+    distractionStart: null,
+    level:            0,      // 0=focused 1=away>5s 2=away>15s 3=away>20s
+}
+var lastGazeTimestamp  = 0
+var watchdogIntervalId = null
+var lkcIntervalId      = null
+
+// Smoothing is now handled by KalmanGaze inside GazePipeline (gaze-pipeline.js).
+
+// â”€â”€â”€ GazeCursor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Princeton-orange ring that follows the smoothed gaze point.
 // WebGazer's built-in red dot is hidden; this replaces it with a styled ring.
 var GazeCursor = {
@@ -117,10 +175,10 @@ var GazeCursor = {
     }
 }
 
-// ─── DwellGrid ────────────────────────────────────────────────────────────────
-// Divides the viewport into GRID_COLS × GRID_ROWS sectors.
+// â”€â”€â”€ DwellGrid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Divides the viewport into GRID_COLS Ã— GRID_ROWS sectors.
 // Fires onDwell(sectorId, x, y) only when the smoothed gaze stays inside the
-// same sector for DWELL_THRESHOLD_MS — eliminating spurious fixation signals.
+// same sector for DWELL_THRESHOLD_MS â€” eliminating spurious fixation signals.
 var DwellGrid = {
     currentSector: null,
     dwellTimer:    null,
@@ -134,7 +192,7 @@ var DwellGrid = {
     update: function (x, y) {
         var sector = this._sector(x, y)
         if (sector !== this.currentSector) {
-            // Left the previous sector — cancel any pending dwell
+            // Left the previous sector â€” cancel any pending dwell
             if (this.dwellTimer) { clearTimeout(this.dwellTimer); this.dwellTimer = null }
             this.currentSector = sector
 
@@ -164,7 +222,7 @@ var DwellGrid = {
     },
 
     /**
-     * Maps (x, y) → integer sector ID  0 … (COLS × ROWS − 1),
+     * Maps (x, y) â†’ integer sector ID  0 â€¦ (COLS Ã— ROWS âˆ’ 1),
      * column-major within each row.
      */
     _sector: function (x, y) {
@@ -183,6 +241,20 @@ function getModeConfig() {
     return ACCURACY_MODE[activeAccuracyMode] || ACCURACY_MODE.balanced
 }
 
+// â”€â”€â”€ Viewport text helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function getViewportText() {
+    var vh = window.innerHeight
+    var chunks = []
+    document.querySelectorAll('p, li, h1, h2, h3').forEach(function (el) {
+        var r = el.getBoundingClientRect()
+        if (r.top < vh && r.bottom > 0) {
+            var t = el.textContent.trim()
+            if (t.length > 20) chunks.push(t)
+        }
+    })
+    return chunks.join(' ').slice(0, 600)
+}
+
 function toViewportPoint(p) {
     return {
         x: Math.round((p.x / 100) * window.innerWidth),
@@ -198,12 +270,494 @@ function median(values) {
     return arr[mid]
 }
 
+function mean(values) {
+    if (!values || values.length === 0) return null
+    return values.reduce(function (s, v) { return s + v }, 0) / values.length
+}
+
+function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(v, hi))
+}
+
+function getDefaultFlags() {
+    var m = chrome.runtime.getManifest()
+    var isDev = !m.update_url
+    return {
+        adaptive_kalman_v1: isDev,
+        intervention_hysteresis_v2: isDev,
+        calibration_quality_gates_v1: false,
+        line_aware_snap_v1: false,
+        drift_map_v1: false,
+        residual_fusion_v1: false,
+    }
+}
+
+function mergeFlags(flags) {
+    var d = getDefaultFlags()
+    if (!flags || typeof flags !== 'object') return d
+    Object.keys(d).forEach(function (k) {
+        if (typeof flags[k] === 'boolean') d[k] = flags[k]
+    })
+    return d
+}
+
+async function loadFlagsFromStorage() {
+    return await new Promise(function (resolve) {
+        chrome.storage.local.get(['na_flags'], function (data) {
+            activeFlags = mergeFlags(data && data.na_flags)
+            resolve(activeFlags)
+        })
+    })
+}
+
+function getMeasurementRatio() {
+    if (!measurementHistory.length) return 1
+    var sum = measurementHistory.reduce(function (s, v) { return s + v }, 0)
+    return sum / measurementHistory.length
+}
+
+function pushMeasurementFlag(hasMeasurement) {
+    measurementHistory.push(hasMeasurement ? 1 : 0)
+    if (measurementHistory.length > 60) measurementHistory.shift()
+}
+
+function medianCopy(values) {
+    if (!values || values.length === 0) return null
+    var arr = values.slice().sort(function (a, b) { return a - b })
+    var mid = Math.floor(arr.length / 2)
+    return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2
+}
+
+function stddev(values) {
+    if (!values || values.length === 0) return 0
+    var m = mean(values) || 0
+    var variance = values.reduce(function (s, v) {
+        var d = v - m
+        return s + d * d
+    }, 0) / values.length
+    return Math.sqrt(variance)
+}
+
+function hashLineId(seed) {
+    var h = 2166136261
+    for (var i = 0; i < seed.length; i++) {
+        h ^= seed.charCodeAt(i)
+        h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)
+    }
+    return 'ln_' + (h >>> 0).toString(16)
+}
+
+function buildLineCandidates() {
+    var now = Date.now()
+    if (now - lineSnapCache.ts < 350) return lineSnapCache.entries
+    lineSnapCache.ts = now
+    var entries = []
+    var els = document.querySelectorAll('p, li, h1, h2, h3, blockquote, td, th')
+    for (var i = 0; i < els.length && entries.length < 400; i++) {
+        var el = els[i]
+        var rect = el.getBoundingClientRect()
+        if (rect.width < 20 || rect.height < 8) continue
+        if (rect.bottom < -20 || rect.top > window.innerHeight + 20) continue
+        var style = window.getComputedStyle(el)
+        var lineHeight = parseFloat(style.lineHeight)
+        if (!isFinite(lineHeight) || lineHeight <= 0) {
+            lineHeight = parseFloat(style.fontSize) * 1.4
+        }
+        lineHeight = Math.max(12, Math.min(48, lineHeight || 18))
+        var lineCount = Math.max(1, Math.round(rect.height / lineHeight))
+        for (var line = 0; line < lineCount; line++) {
+            var y = rect.top + Math.min(rect.height - 1, lineHeight * (line + 0.5))
+            var id = hashLineId(el.tagName + '|' + i + '|' + line + '|' + Math.round(rect.left) + '|' + Math.round(rect.top))
+            entries.push({
+                id: id,
+                element: el,
+                rect: rect,
+                lineMidX: rect.left + rect.width / 2,
+                lineMidY: y,
+            })
+        }
+    }
+    lineSnapCache.entries = entries
+    return entries
+}
+
+function lineAwareSnap(x, y) {
+    var entries = buildLineCandidates()
+    var best = null
+    var bestScore = Infinity
+    for (var i = 0; i < entries.length; i++) {
+        var e = entries[i]
+        var dx = x - e.lineMidX
+        var dy = y - e.lineMidY
+        var score = Math.sqrt((dx * dx) + (dy * dy * 1.8 * 1.8))
+        if (score < bestScore) {
+            bestScore = score
+            best = e
+        }
+    }
+    if (!best) {
+        return { x: x, y: y, snapDistancePx: Infinity, lineId: null, lineSnapUsed: false, element: null }
+    }
+    if (bestScore <= CONFIG.LINE_SNAP_RADIUS_PX) {
+        var sx = clamp(x, best.rect.left, best.rect.right)
+        var sy = best.lineMidY
+        return {
+            x: sx,
+            y: sy,
+            snapDistancePx: Math.sqrt(Math.pow(sx - x, 2) + Math.pow(sy - y, 2)),
+            lineId: best.id,
+            lineSnapUsed: true,
+            element: best.element,
+            anchorX: sx,
+            anchorY: sy,
+        }
+    }
+    // Fallback: rectangle magnetism from prior behavior.
+    var dx = Math.max(best.rect.left - x, 0, x - best.rect.right)
+    var dy = Math.max(best.rect.top - y, 0, y - best.rect.bottom)
+    var rectDist = Math.sqrt(dx * dx + dy * dy)
+    if (rectDist <= 80) {
+        var fx = clamp(x, best.rect.left, best.rect.right)
+        var fy = clamp(y, best.rect.top, best.rect.bottom)
+        return { x: fx, y: fy, snapDistancePx: rectDist, lineId: best.id, lineSnapUsed: false, element: best.element, anchorX: fx, anchorY: fy }
+    }
+    return { x: x, y: y, snapDistancePx: bestScore, lineId: best.id, lineSnapUsed: false, element: best.element }
+}
+
+function initAdaptiveKalman() {
+    kalmanAdaptive = {
+        x: { pos: 0, vel: 0, pp: 1000, pv: 0, vp: 0, vv: 100, lastT: null },
+        y: { pos: 0, vel: 0, pp: 1000, pv: 0, vp: 0, vv: 100, lastT: null },
+        q: 8,
+        baseR: 40,
+    }
+}
+
+function kalmanPredictAxis(axis, q, nowMs) {
+    var dt = axis.lastT !== null ? (nowMs - axis.lastT) / 1000 : 0.033
+    axis.lastT = nowMs
+    dt = clamp(dt, 0.001, 0.2)
+    axis.pos += axis.vel * dt
+    var pp = axis.pp + dt * (axis.pv + axis.vp) + dt * dt * axis.vv + q * dt * dt * dt / 3
+    var pv = axis.pv + dt * axis.vv + q * dt * dt / 2
+    var vp = axis.vp + dt * axis.vv + q * dt * dt / 2
+    var vv = axis.vv + q * dt
+    axis.pp = pp; axis.pv = pv; axis.vp = vp; axis.vv = vv
+}
+
+function kalmanUpdateAxis(axis, measurement, r) {
+    var S = axis.pp + r
+    if (S <= 0) return
+    var kp = axis.pp / S
+    var kv = axis.vp / S
+    var innov = measurement - axis.pos
+    axis.pos += kp * innov
+    axis.vel += kv * innov
+    var pp = (1 - kp) * axis.pp
+    var pv = (1 - kp) * axis.pv
+    var vp = axis.vp - kv * axis.pp
+    var vv = axis.vv - kv * axis.pv
+    axis.pp = pp; axis.pv = pv; axis.vp = vp; axis.vv = vv
+}
+
+function computeAdaptiveMeasurementNoise(hasMeasurement, readingScore, degradationScore, measurementRatio) {
+    var r = kalmanAdaptive.baseR
+    if (!hasMeasurement) r *= 1.8
+    r *= 1 + clamp(degradationScore, 0, 1.5) * 0.8
+    if (readingScore < 0.55) r *= 1.2
+    if (measurementRatio < 0.75) r *= 1.25
+    if (readingScore >= 0.55 && degradationScore <= 0.4 && measurementRatio >= 0.85) r *= 0.8
+    return clamp(r, CONFIG.KALMAN_MEAS_NOISE_MIN, CONFIG.KALMAN_MEAS_NOISE_MAX)
+}
+
+function adaptiveKalmanProcess(rawX, rawY, meta) {
+    if (!kalmanAdaptive) initAdaptiveKalman()
+    var now = Date.now()
+    var hasMeasurement = !(meta && meta.hasMeasurement === false)
+    var readingScore = meta && typeof meta.readingScore === 'number' ? meta.readingScore : 0.6
+    var degradationScore = meta && typeof meta.degradationScore === 'number' ? meta.degradationScore : 0
+    var measurementRatio = getMeasurementRatio()
+    var r = computeAdaptiveMeasurementNoise(hasMeasurement, readingScore, degradationScore, measurementRatio)
+    kalmanPredictAxis(kalmanAdaptive.x, kalmanAdaptive.q, now)
+    kalmanPredictAxis(kalmanAdaptive.y, kalmanAdaptive.q, now)
+    if (hasMeasurement) {
+        kalmanUpdateAxis(kalmanAdaptive.x, rawX, r)
+        kalmanUpdateAxis(kalmanAdaptive.y, rawY, r)
+    }
+    return { x: kalmanAdaptive.x.pos, y: kalmanAdaptive.y.pos, vx: kalmanAdaptive.x.vel, vy: kalmanAdaptive.y.vel, r: r }
+}
+
+function resetAdaptiveKalman() {
+    kalmanAdaptive = null
+}
+
+function gatherResidualFeatures(point, meta, readingScore, degradationScore) {
+    var x = point.x, y = point.y
+    var vx = point.vx || 0, vy = point.vy || 0
+    var regionBucket = 0
+    var col = clamp(Math.floor((x / Math.max(window.innerWidth, 1)) * 3), 0, 2)
+    var row = clamp(Math.floor((y / Math.max(window.innerHeight, 1)) * 3), 0, 2)
+    regionBucket = row * 3 + col
+    return [
+        1,
+        x / Math.max(window.innerWidth, 1),
+        y / Math.max(window.innerHeight, 1),
+        vx / 1000,
+        vy / 1000,
+        (meta.yaw || 0) / 45,
+        (meta.pitch || 0) / 40,
+        (meta.roll || 0) / 30,
+        (meta.ipdRatio || 1) - 1,
+        readingScore,
+        degradationScore,
+        regionBucket / 8,
+    ]
+}
+
+function dot(weights, features) {
+    var s = 0
+    for (var i = 0; i < features.length; i++) s += weights[i] * features[i]
+    return s
+}
+
+function norm(weights) {
+    var s = 0
+    for (var i = 0; i < weights.length; i++) s += weights[i] * weights[i]
+    return Math.sqrt(s)
+}
+
+function initResidualFusion() {
+    residualFusion.wx = new Array(residualFusion.dim).fill(0)
+    residualFusion.wy = new Array(residualFusion.dim).fill(0)
+    residualFusion.sampleCount = 0
+    residualFusion.residualHistory = []
+}
+
+function trainResidualFusion(features, dx, dy) {
+    if (!residualFusion.wx) initResidualFusion()
+    var lr = 0.02
+    var lambda = 0.001
+    var px = dot(residualFusion.wx, features)
+    var py = dot(residualFusion.wy, features)
+    var ex = px - dx
+    var ey = py - dy
+    for (var i = 0; i < features.length; i++) {
+        residualFusion.wx[i] -= lr * (ex * features[i] + lambda * residualFusion.wx[i])
+        residualFusion.wy[i] -= lr * (ey * features[i] + lambda * residualFusion.wy[i])
+    }
+    var maxNorm = 10
+    var nx = norm(residualFusion.wx)
+    var ny = norm(residualFusion.wy)
+    if (nx > maxNorm) {
+        var sx = maxNorm / nx
+        for (var j = 0; j < residualFusion.wx.length; j++) residualFusion.wx[j] *= sx
+    }
+    if (ny > maxNorm) {
+        var sy = maxNorm / ny
+        for (var k = 0; k < residualFusion.wy.length; k++) residualFusion.wy[k] *= sy
+    }
+    residualFusion.sampleCount += 1
+}
+
+function applyResidualFusion(point, meta, readingScore, degradationScore) {
+    if (!residualFusion.wx) initResidualFusion()
+    var features = gatherResidualFeatures(point, meta, readingScore, degradationScore)
+    var predDx = dot(residualFusion.wx, features)
+    var predDy = dot(residualFusion.wy, features)
+    var confidence = clamp(residualFusion.sampleCount / 60, 0, 1) * clamp(1 - degradationScore, 0, 1)
+    var residualMedian = medianCopy(residualFusion.residualHistory) || 0
+    if (residualMedian > CONFIG.DRIFT_ANCHOR_MAX_RESIDUAL_PX) confidence = 0
+    return {
+        x: point.x + predDx * confidence,
+        y: point.y + predDy * confidence,
+        features: features,
+        confidence: confidence,
+        predDx: predDx,
+        predDy: predDy,
+    }
+}
+
+function fitAffineFromAnchors(anchors) {
+    if (!anchors || anchors.length < 4) return null
+    var s_rx2 = 0, s_rxry = 0, s_rx = 0, s_ry2 = 0, s_ry = 0
+    var s_rxsx = 0, s_rysx = 0, s_sx = 0, s_rxsy = 0, s_rysy = 0, s_sy = 0
+    for (var i = 0; i < anchors.length; i++) {
+        var a = anchors[i]
+        var w = Math.max(0.2, Math.min(1, a.weight || 1))
+        var rx = a.rawX, ry = a.rawY, sx = a.anchorX, sy = a.anchorY
+        s_rx2 += w * rx * rx; s_rxry += w * rx * ry; s_rx += w * rx
+        s_ry2 += w * ry * ry; s_ry += w * ry
+        s_rxsx += w * rx * sx; s_rysx += w * ry * sx; s_sx += w * sx
+        s_rxsy += w * rx * sy; s_rysy += w * ry * sy; s_sy += w * sy
+    }
+    var m = [s_rx2, s_rxry, s_rx, s_rxry, s_ry2, s_ry, s_rx, s_ry, anchors.length]
+    var inv = inv3x3(m)
+    if (!inv) return null
+    var cx = mulMat3Vec(inv, [s_rxsx, s_rysx, s_sx])
+    var cy = mulMat3Vec(inv, [s_rxsy, s_rysy, s_sy])
+    return { a: cx[0], b: cx[1], c: cx[2], d: cy[0], e: cy[1], f: cy[2] }
+}
+
+function inv3x3(m) {
+    var det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6])
+    if (Math.abs(det) < 1e-12) return null
+    var d = 1 / det
+    return [
+        (m[4] * m[8] - m[5] * m[7]) * d, (m[2] * m[7] - m[1] * m[8]) * d, (m[1] * m[5] - m[2] * m[4]) * d,
+        (m[5] * m[6] - m[3] * m[8]) * d, (m[0] * m[8] - m[2] * m[6]) * d, (m[2] * m[3] - m[0] * m[5]) * d,
+        (m[3] * m[7] - m[4] * m[6]) * d, (m[1] * m[6] - m[0] * m[7]) * d, (m[0] * m[4] - m[1] * m[3]) * d
+    ]
+}
+
+function mulMat3Vec(m, v) {
+    return [
+        m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+        m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+        m[6] * v[0] + m[7] * v[1] + m[8] * v[2]
+    ]
+}
+
+function applyAffine(model, x, y) {
+    if (!model) return { x: x, y: y }
+    return { x: model.a * x + model.b * y + model.c, y: model.d * x + model.e * y + model.f }
+}
+
+function maybeUpdateDriftModel() {
+    if (driftMap.exploded) return
+    if (driftMap.anchors.length < CONFIG.DRIFT_ANCHOR_BATCH) return
+    driftMap.model = fitAffineFromAnchors(driftMap.anchors)
+    if (!driftMap.model) return
+    var residuals = driftMap.anchors.slice(-20).map(function (a) {
+        var p = applyAffine(driftMap.model, a.rawX, a.rawY)
+        return Math.sqrt(Math.pow(p.x - a.anchorX, 2) + Math.pow(p.y - a.anchorY, 2))
+    })
+    var med = medianCopy(residuals) || 0
+    driftMap.residualHistory.push(med)
+    if (driftMap.residualHistory.length > 40) driftMap.residualHistory.shift()
+    if (med > CONFIG.DRIFT_ANCHOR_MAX_RESIDUAL_PX) {
+        driftMap.exploded = true
+        driftMap.model = null
+    }
+}
+
+function resetDriftMap() {
+    driftMap.anchors = []
+    driftMap.model = null
+    driftMap.exploded = false
+    driftMap.residualHistory = []
+}
+
+function onMajorLayoutChange() {
+    lineSnapCache.ts = 0
+    resetDriftMap()
+}
+
+function bindDriftResetListeners() {
+    if (driftResetListenersBound) return
+    window.addEventListener('resize', onMajorLayoutChange, true)
+    window.addEventListener('orientationchange', onMajorLayoutChange, true)
+    window.addEventListener('pagehide', onMajorLayoutChange, true)
+    driftResetListenersBound = true
+}
+
+function unbindDriftResetListeners() {
+    if (!driftResetListenersBound) return
+    window.removeEventListener('resize', onMajorLayoutChange, true)
+    window.removeEventListener('orientationchange', onMajorLayoutChange, true)
+    window.removeEventListener('pagehide', onMajorLayoutChange, true)
+    driftResetListenersBound = false
+}
+
+function captureSessionJitter(point, hasMeasurement) {
+    if (!hasMeasurement) return
+    if (sessionMetrics.lastFinalPoint) {
+        var dx = point.x - sessionMetrics.lastFinalPoint.x
+        var dy = point.y - sessionMetrics.lastFinalPoint.y
+        var d = Math.sqrt(dx * dx + dy * dy)
+        sessionMetrics.jitterSamples.push(d)
+        if (sessionMetrics.jitterSamples.length > 800) sessionMetrics.jitterSamples.shift()
+    }
+    sessionMetrics.lastFinalPoint = { x: point.x, y: point.y }
+}
+
+function buildSessionMetricsSnapshot() {
+    var jitterMedian = medianCopy(sessionMetrics.jitterSamples) || 0
+    var lineErr = sessionMetrics.lineSwitchTotal > 0
+        ? (sessionMetrics.lineSwitchSuspicious / sessionMetrics.lineSwitchTotal)
+        : 0
+    var interventionErr = sessionMetrics.interventionActivations > 0
+        ? (sessionMetrics.interventionFalseTriggers / sessionMetrics.interventionActivations)
+        : 0
+    return {
+        sessionId: sessionMetrics.sessionId || null,
+        sessionStartTs: sessionMetrics.sessionStartTs,
+        medianJitterPx: parseFloat(jitterMedian.toFixed(2)),
+        lineSwitchErrorRate: parseFloat(lineErr.toFixed(3)),
+        interventionFalseTriggerRate: parseFloat(interventionErr.toFixed(3)),
+        counts: {
+            lineSwitchTotal: sessionMetrics.lineSwitchTotal,
+            lineSwitchSuspicious: sessionMetrics.lineSwitchSuspicious,
+            interventionActivations: sessionMetrics.interventionActivations,
+            interventionFalseTriggers: sessionMetrics.interventionFalseTriggers,
+            jitterSamples: sessionMetrics.jitterSamples.length,
+        },
+        ts: Date.now(),
+    }
+}
+
+function mirrorSessionMetricsMaybe() {
+    if (!chrome.storage || !chrome.storage.session || !chrome.storage.session.set) return
+    var now = Date.now()
+    if (now - lastSessionMirrorTs < 1500) return
+    lastSessionMirrorTs = now
+    try {
+        chrome.storage.session.set({ na_session_metrics: buildSessionMetricsSnapshot() }, function () {})
+    } catch (_e) {}
+}
+
+function estimateReadingScoreFromBuffer() {
+    if (gazeBuffer.length < 6) return 0.5
+    var recent = gazeBuffer.slice(-20)
+    var total = 0
+    var rightward = 0
+    var stableY = 0
+    for (var i = 1; i < recent.length; i++) {
+        var dt = Math.max(1, recent[i].t - recent[i - 1].t)
+        var vx = (recent[i].x - recent[i - 1].x) / dt * 1000
+        var vy = Math.abs((recent[i].y - recent[i - 1].y) / dt * 1000)
+        if (Math.abs(vx) > 1200) continue
+        total++
+        if (vx > 50) rightward++
+        if (vy < 280) stableY++
+    }
+    if (!total) return 0.5
+    var s = (rightward / total) * 0.6 + (stableY / total) * 0.4
+    return clamp(s, 0, 1)
+}
+
+function getCurrentHeadSpeedDegPerSec() {
+    var now = Date.now()
+    if (!lastHeadMetaTs || !sessionMetrics._prevHeadMeta) {
+        sessionMetrics._prevHeadMeta = { yaw: lastHeadMeta.yaw || 0, pitch: lastHeadMeta.pitch || 0, t: now }
+        return 0
+    }
+    var prev = sessionMetrics._prevHeadMeta
+    var dt = Math.max(0.001, (now - prev.t) / 1000)
+    var s = Math.sqrt(Math.pow((lastHeadMeta.yaw || 0) - prev.yaw, 2) + Math.pow((lastHeadMeta.pitch || 0) - prev.pitch, 2)) / dt
+    sessionMetrics._prevHeadMeta = { yaw: lastHeadMeta.yaw || 0, pitch: lastHeadMeta.pitch || 0, t: now }
+    return s
+}
+
+function getCalibrationVarianceThreshold() {
+    return activeAccuracyMode === 'precision' ? CONFIG.CAL_POINT_STDDEV_PRECISION : CONFIG.CAL_POINT_STDDEV_BALANCED
+}
+
 function injectStyles() {
     if (document.getElementById('na-styles')) return
     var style = document.createElement('style')
     style.id = 'na-styles'
     style.textContent = [
-        // Gaze cursor — Princeton orange ring, centre-anchored
+        // Gaze cursor â€” Princeton orange ring, centre-anchored
         '#na-gaze-cursor {',
         '  position: fixed;',
         '  width: 22px; height: 22px;',
@@ -244,75 +798,260 @@ function injectStyles() {
         '.na-elevated p { line-height: 1.9 !important; letter-spacing: 0.04em !important; transition: all 0.6s ease !important; }',
         '.na-overload p { line-height: 2.1 !important; letter-spacing: 0.12em !important; max-width: 66ch !important; transition: all 0.6s ease !important; }',
         '.na-sentence { transition: opacity 0.4s ease; display: inline; }',
+
+        // â”€â”€ Visual Anchor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        '@keyframes na-anchor-pulse {',
+        '  0%,100% { background: rgba(245,128,37,0.15); box-shadow: inset 4px 0 0 #F58025; }',
+        '  50%      { background: rgba(245,128,37,0.35); box-shadow: inset 4px 0 0 #F58025; }',
+        '}',
+        '.na-visual-anchor {',
+        '  border-left: 4px solid #F58025 !important;',
+        '  padding-left: 12px !important;',
+        '  background: rgba(255,165,0,0.2) !important;',
+        '  animation: na-anchor-pulse 3s ease-in-out !important;',
+        '  transition: background 0.4s ease, border-left 0.4s ease !important;',
+        '}',
+        '@media (prefers-reduced-motion: reduce) {',
+        '  .na-visual-anchor { animation: none !important; }',
+        '}',
+
+        // â”€â”€ Peripheral Movement (slides in from edges at 2 Hz) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        '@keyframes na-peripheral-slide-l {',
+        '  0%   { transform: translateX(-100%); opacity: 0; }',
+        '  40%  { transform: translateX(0);     opacity: 1; }',
+        '  60%  { transform: translateX(0);     opacity: 1; }',
+        '  100% { transform: translateX(-100%); opacity: 0; }',
+        '}',
+        '@keyframes na-peripheral-slide-r {',
+        '  0%   { transform: translateX(100%);  opacity: 0; }',
+        '  40%  { transform: translateX(0);     opacity: 1; }',
+        '  60%  { transform: translateX(0);     opacity: 1; }',
+        '  100% { transform: translateX(100%);  opacity: 0; }',
+        '}',
+        '#na-peripheral-left, #na-peripheral-right {',
+        '  position: fixed; top: 0; width: 56px; height: 100vh;',
+        '  pointer-events: none; z-index: 2147483640;',
+        '}',
+        '#na-peripheral-left {',
+        '  left: 0;',
+        '  background: linear-gradient(90deg, rgba(100,160,255,0.30), transparent);',
+        '  animation: na-peripheral-slide-l 500ms ease-in-out infinite;',
+        '}',
+        '#na-peripheral-right {',
+        '  right: 0; pointer-events: auto;',
+        '  background: linear-gradient(270deg, rgba(100,160,255,0.30), transparent);',
+        '  animation: na-peripheral-slide-r 500ms ease-in-out infinite;',
+        '  display: flex; align-items: flex-end; justify-content: flex-end; padding: 12px;',
+        '}',
+        '#na-peripheral-dismiss {',
+        '  background: rgba(0,0,0,0.55); color: #ccc; border: 1px solid #555;',
+        '  border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer;',
+        '  pointer-events: auto; z-index: 2147483641;',
+        '}',
+        '@media (prefers-reduced-motion: reduce) {',
+        '  #na-peripheral-left { animation: none; opacity: 0.25; }',
+        '  #na-peripheral-right { animation: none; opacity: 0.25; }',
+        '}',
+
+        // â”€â”€ Breadcrumb toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        '@keyframes na-toast-in {',
+        '  from { transform: translateY(20px); opacity: 0; }',
+        '  to   { transform: translateY(0);    opacity: 1; }',
+        '}',
+        '#na-breadcrumb-toast {',
+        '  position: fixed; bottom: 24px; right: 24px; max-width: 300px;',
+        '  background: rgba(10,10,16,0.94); color: #f0f6fc;',
+        '  border-left: 4px solid #F58025; border-radius: 10px;',
+        '  padding: 12px 36px 12px 14px;',
+        '  font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px;',
+        '  box-shadow: 0 4px 20px rgba(0,0,0,0.45);',
+        '  z-index: 2147483646;',
+        '  animation: na-toast-in 0.3s ease;',
+        '}',
+        '.na-toast-label {',
+        '  font-size: 10px; font-weight: 700; letter-spacing: 0.1em;',
+        '  color: #F58025; text-transform: uppercase; margin-bottom: 6px;',
+        '}',
+        '.na-toast-body { line-height: 1.55; color: #e8e8e8; }',
+        '.na-toast-close {',
+        '  position: absolute; top: 8px; right: 10px;',
+        '  background: none; border: none; color: rgba(255,255,255,0.35);',
+        '  font-size: 15px; cursor: pointer; line-height: 1; padding: 0;',
+        '}',
+        '.na-toast-close:hover { color: rgba(255,255,255,0.8); }',
+        '@media (prefers-reduced-motion: reduce) {',
+        '  #na-breadcrumb-toast { animation: none; }',
+        '}',
     ].join('\n')
     document.head.appendChild(style)
 }
 
-function ensureWebGazerLoaded() {
-    return new Promise(function (resolve, reject) {
-        if (window.webgazer && typeof window.webgazer.begin === 'function') {
-            resolve()
+// ── Gaze update from offscreen FaceMesh ──────────────────────────────────────
+// Receives GAZE_UPDATE from background, applies IIR smoothing, drives all UI.
+var _GAZE_ALPHA = 0.30
+
+function onGazeUpdate(data) {
+    if (!isRunning || isCalibrating) return
+    data = data || {}
+
+    var now = Date.now()
+    var hasMeasurement = !!(data && data.hasMeasurement !== false && typeof data.x === 'number' && typeof data.y === 'number')
+    var rawX = hasMeasurement ? data.x : (lastRawGaze ? lastRawGaze.x : null)
+    var rawY = hasMeasurement ? data.y : (lastRawGaze ? lastRawGaze.y : null)
+    if (hasMeasurement) lastRawGaze = { x: rawX, y: rawY }
+
+    var prevYaw = lastHeadMeta.yaw || 0
+    var prevPitch = lastHeadMeta.pitch || 0
+    lastHeadMeta = {
+        yaw: typeof data.yaw === 'number' ? data.yaw : prevYaw,
+        pitch: typeof data.pitch === 'number' ? data.pitch : prevPitch,
+        roll: typeof data.roll === 'number' ? data.roll : (lastHeadMeta.roll || 0),
+        ipdRatio: typeof data.ipdRatio === 'number' ? data.ipdRatio : (lastHeadMeta.ipdRatio || 1),
+        degradationScore: typeof data.degradationScore === 'number' ? data.degradationScore : (hasMeasurement ? 0 : 1),
+        isTrackerDegraded: !!data.isTrackerDegraded || !hasMeasurement,
+    }
+    var dtSec = lastHeadMetaTs ? Math.max(0.001, (now - lastHeadMetaTs) / 1000) : 0.033
+    var headSpeed = Math.sqrt(
+        Math.pow(lastHeadMeta.yaw - prevYaw, 2) +
+        Math.pow(lastHeadMeta.pitch - prevPitch, 2)
+    ) / dtSec
+    lastHeadMetaTs = now
+
+    pushMeasurementFlag(hasMeasurement)
+    var measurementRatio = getMeasurementRatio()
+    var readingScore = estimateReadingScoreFromBuffer()
+
+    var filtered
+    if (activeFlags && activeFlags.adaptive_kalman_v1) {
+        if (!hasMeasurement && (rawX === null || rawY === null)) {
+            latestPrecisionLive.readingScore = readingScore
+            latestPrecisionLive.degradationScore = lastHeadMeta.degradationScore
+            latestPrecisionLive.measurementRatio = measurementRatio
+            latestPrecisionLive.snapDistancePx = 999
+            latestPrecisionLive.interventionBlocked = Date.now() < interventionBlockedUntil
+            latestPrecisionLive.ts = now
+            mirrorSessionMetricsMaybe()
             return
         }
-
-        // Ask background to inject webgazer.js via chrome.scripting (isolated world,
-        // so chrome.runtime.getURL is available for local model loading).
-        chrome.runtime.sendMessage({ type: 'INJECT_WEBGAZER' }, function (response) {
-            if (chrome.runtime.lastError) {
-                reject(new Error('webgazer inject error: ' + chrome.runtime.lastError.message))
-                return
-            }
-            if (!response || !response.ok) {
-                reject(new Error('webgazer inject failed: ' + (response && response.error || 'unknown')))
-                return
-            }
-            // chrome.scripting.executeScript resolves only after the script finishes,
-            // so window.webgazer should be set immediately. Poll briefly as safety net.
-            var attempts = 0
-            var timer = setInterval(function () {
-                attempts++
-                if (window.webgazer && typeof window.webgazer.begin === 'function') {
-                    clearInterval(timer)
-                    resolve()
-                } else if (attempts >= 30) {
-                    clearInterval(timer)
-                    reject(new Error('webgazer.js did not initialize after injection'))
-                }
-            }, 100)
+        filtered = adaptiveKalmanProcess(rawX, rawY, {
+            hasMeasurement: hasMeasurement,
+            readingScore: readingScore,
+            degradationScore: lastHeadMeta.degradationScore,
         })
-    })
-}
-
-async function getCurrentPredictionSafe() {
-    try {
-        if (!window.webgazer || typeof window.webgazer.getCurrentPrediction !== 'function') return null
-        return await window.webgazer.getCurrentPrediction()
-    } catch (e) {
-        return null
-    }
-}
-
-async function collectCalibrationSample(targetX, targetY, pointState) {
-    var mode = getModeConfig()
-    var prediction = await getCurrentPredictionSafe()
-
-    if (prediction && pointState.accepted >= 1) {
-        var dx = prediction.x - targetX
-        var dy = prediction.y - targetY
-        var error = Math.sqrt(dx * dx + dy * dy)
-        if (error > mode.outlierThresholdPx) {
-            return { accepted: false, reason: 'outlier', errorPx: Math.round(error) }
+    } else {
+        if (!hasMeasurement && !_gazeSmoothed) {
+            latestPrecisionLive.readingScore = readingScore
+            latestPrecisionLive.degradationScore = lastHeadMeta.degradationScore
+            latestPrecisionLive.measurementRatio = measurementRatio
+            latestPrecisionLive.snapDistancePx = 999
+            latestPrecisionLive.interventionBlocked = Date.now() < interventionBlockedUntil
+            latestPrecisionLive.ts = now
+            mirrorSessionMetricsMaybe()
+            return
         }
+        var rx = rawX, ry = rawY
+        if (hasMeasurement && _gazeSmoothed) {
+            rx = _GAZE_ALPHA * rx + (1 - _GAZE_ALPHA) * _gazeSmoothed.x
+            ry = _GAZE_ALPHA * ry + (1 - _GAZE_ALPHA) * _gazeSmoothed.y
+        }
+        if (!hasMeasurement && _gazeSmoothed) {
+            rx = _gazeSmoothed.x
+            ry = _gazeSmoothed.y
+        }
+        _gazeSmoothed = { x: rx, y: ry }
+        filtered = { x: rx, y: ry, vx: 0, vy: 0, r: 40 }
     }
 
-    // Add multiple click-type samples to stabilize regression fit.
-    window.webgazer.recordScreenPosition(targetX, targetY, 'click')
-    window.webgazer.recordScreenPosition(targetX, targetY, 'click')
-    pointState.accepted += 1
-    return { accepted: true, reason: 'ok' }
+    var corrected = { x: filtered.x, y: filtered.y, vx: filtered.vx, vy: filtered.vy }
+    if (activeFlags && activeFlags.drift_map_v1 && driftMap.model) {
+        var d = applyAffine(driftMap.model, corrected.x, corrected.y)
+        corrected.x = d.x
+        corrected.y = d.y
+    }
+
+    var residualApplied = { x: corrected.x, y: corrected.y, confidence: 0, predDx: 0, predDy: 0, features: null }
+    if (activeFlags && activeFlags.residual_fusion_v1) {
+        residualApplied = applyResidualFusion(corrected, lastHeadMeta, readingScore, lastHeadMeta.degradationScore)
+        corrected.x = residualApplied.x
+        corrected.y = residualApplied.y
+    }
+
+    var snapped = { x: corrected.x, y: corrected.y, snapDistancePx: 0, lineId: null, lineSnapUsed: false, element: null }
+    if (activeFlags && activeFlags.line_aware_snap_v1) {
+        snapped = lineAwareSnap(corrected.x, corrected.y)
+    }
+
+    lastGazeTimestamp = now
+    smoothedPoint = { x: snapped.x, y: snapped.y }
+    GazeCursor.move(snapped.x, snapped.y)
+    DwellGrid.update(snapped.x, snapped.y)
+
+    if (snapped.lineId && lastLineId && snapped.lineId !== lastLineId) {
+        sessionMetrics.lineSwitchTotal += 1
+        var jump = Math.abs(snapped.y - (sessionMetrics.lastFinalPoint ? sessionMetrics.lastFinalPoint.y : snapped.y))
+        var returnSweepLike = filtered.vx < -220 && filtered.vy > 5
+        if (!returnSweepLike || jump > 90) sessionMetrics.lineSwitchSuspicious += 1
+        if (returnSweepLike) lastSweepTs = now
+    }
+    if (snapped.lineId) lastLineId = snapped.lineId
+
+    captureSessionJitter(snapped, hasMeasurement)
+    latestPrecisionLive.readingScore = readingScore
+    latestPrecisionLive.degradationScore = lastHeadMeta.degradationScore
+    latestPrecisionLive.measurementRatio = measurementRatio
+    latestPrecisionLive.snapDistancePx = isFinite(snapped.snapDistancePx) ? snapped.snapDistancePx : 999
+
+    gazeBuffer.push({ x: snapped.x, y: snapped.y, t: now })
+    if (gazeBuffer.length > CONFIG.SAMPLE_BUFFER_SIZE) gazeBuffer.shift()
+    if (now - lastSendTime < CONFIG.SEND_INTERVAL_MS) return
+    lastSendTime = now
+    if (gazeBuffer.length < 10) return
+
+    var signals = computeSignals(gazeBuffer)
+
+    if (now - lastDwellBoost < CONFIG.SEND_INTERVAL_MS * 1.5) {
+        signals.fixation = Math.min(signals.fixation + 0.25, 1.0)
+    }
+
+    var score = (signals.fixation * 0.45) + (signals.saccade * 0.35) + (signals.regression * 0.20)
+    score = parseFloat(Math.min(Math.max(score, 0), 1.0).toFixed(3))
+
+    chrome.runtime.sendMessage({
+        type: 'STRESS_SCORE',
+        score: score,
+        signals: signals
+    }).catch(function () {})
+
+    var tier = score < 0.3 ? 'CALM' : score < 0.6 ? 'ELEVATED' : 'OVERLOAD'
+    var state = {
+        isReading: readingScore >= CONFIG.INTERVENTION_MIN_READING_SCORE,
+        readingScore: readingScore,
+        degradationScore: lastHeadMeta.degradationScore,
+        isTrackerDegraded: !!lastHeadMeta.isTrackerDegraded,
+        lineId: snapped.lineId,
+        lineSnapUsed: snapped.lineSnapUsed,
+        snapDistancePx: latestPrecisionLive.snapDistancePx,
+        measurementRatio: measurementRatio,
+        rawX: rawX,
+        rawY: rawY,
+        preSnapX: corrected.x,
+        preSnapY: corrected.y,
+        headSpeed: headSpeed,
+        residualFeatures: residualApplied.features,
+        residualPredDx: residualApplied.predDx,
+        residualPredDy: residualApplied.predDy,
+        residualConfidence: residualApplied.confidence,
+        anchorX: snapped.anchorX,
+        anchorY: snapped.anchorY,
+    }
+    latestFrameState = state
+    applyInterventionStable(tier, state)
+    latestPrecisionLive.interventionBlocked = Date.now() < interventionBlockedUntil
+    latestPrecisionLive.ts = now
+    mirrorSessionMetricsMaybe()
 }
 
-// ─── Princeton Calibration Wizard ─────────────────────────────────────────────
+// â”€â”€â”€ Princeton Calibration Wizard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Builds the full-screen overlay.  Returns { overlay, status, progressDots }.
 
 function createPrincetonOverlay() {
@@ -330,7 +1069,7 @@ function createPrincetonOverlay() {
         userSelect: 'none',
     })
 
-    // ── Header bar ──────────────────────────────────────────────────────────
+    // â”€â”€ Header bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     var header = document.createElement('div')
     Object.assign(header.style, {
         position:       'fixed',
@@ -358,7 +1097,7 @@ function createPrincetonOverlay() {
     ].join('')
     overlay.appendChild(header)
 
-    // ── Progress pip row ─────────────────────────────────────────────────────
+    // â”€â”€ Progress pip row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     var pipRow = document.createElement('div')
     Object.assign(pipRow.style, {
         position:       'fixed',
@@ -383,7 +1122,7 @@ function createPrincetonOverlay() {
     })
     overlay.appendChild(pipRow)
 
-    // ── Center instructional card ────────────────────────────────────────────
+    // â”€â”€ Center instructional card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     var card = document.createElement('div')
     Object.assign(card.style, {
         position:     'fixed',
@@ -405,7 +1144,7 @@ function createPrincetonOverlay() {
     ].join('')
     overlay.appendChild(card)
 
-    // ── Status bar ───────────────────────────────────────────────────────────
+    // â”€â”€ Status bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     var status = document.createElement('div')
     status.id = 'na-cal-status'
     Object.assign(status.style, {
@@ -419,25 +1158,141 @@ function createPrincetonOverlay() {
         minWidth:   '320px',
         pointerEvents: 'none',
     })
-    status.textContent = 'Preparing…'
+    status.textContent = 'Preparingâ€¦'
     overlay.appendChild(status)
 
     document.body.appendChild(overlay)
     return { overlay: overlay, status: status, pips: pips, stepEl: header.querySelector('#na-cal-step') }
 }
 
+// â”€â”€â”€ Pose Calibration Step â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Called after all 5 calibration dots are clicked.  Shows a live head-pose HUD
+// inside the existing overlay and waits for a stable 1.8 s hold to compute
+// median baselines for IPD, neutral nose ratio, and roll offset.
+async function runPoseCalibrationStep(ui) {
+    if (!HeadPoseLayer || !HeadPoseLayer.isReady()) return
+
+    if (ui.stepEl) ui.stepEl.textContent = 'Pose Baseline'
+    ui.status.textContent = 'Sit naturally and look straight aheadâ€¦'
+
+    var panel = document.createElement('div')
+    panel.id = 'na-pose-cal-panel'
+    Object.assign(panel.style, {
+        position: 'fixed', top: '50%', left: '50%',
+        transform: 'translate(-50%,-50%)',
+        width: '370px',
+        background: 'rgba(16,8,0,0.94)',
+        border: '1px solid rgba(231,117,0,0.35)', borderRadius: '14px',
+        padding: '22px 26px',
+        fontFamily: '"Segoe UI",system-ui,sans-serif', color: '#e8e8e8',
+        zIndex: '2147483648', boxShadow: '0 8px 32px rgba(0,0,0,0.65)',
+    })
+
+    function gaugeRowHTML(label, id) {
+        return [
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:11px;">',
+            '<span style="font-size:12px;color:#888;width:42px;flex-shrink:0;">' + label + '</span>',
+            '<div style="flex:1;height:6px;background:#1e1e1e;border-radius:3px;position:relative;overflow:visible;">',
+            '<div style="position:absolute;top:-1px;bottom:-1px;left:calc(50% - 1px);width:2px;background:#333;"></div>',
+            '<div id="' + id + '-fill" style="position:absolute;top:0;bottom:0;height:100%;',
+            'background:#3fb950;border-radius:3px;transition:left 0.1s,width 0.1s,background 0.2s;left:50%;width:0;"></div>',
+            '</div>',
+            '<span id="' + id + '-val" style="font-size:12px;font-weight:600;color:#ccc;width:34px;text-align:right;flex-shrink:0;">0Â°</span>',
+            '</div>',
+        ].join('')
+    }
+
+    panel.innerHTML = [
+        '<div style="font-size:18px;font-weight:800;color:#E77500;margin-bottom:4px;">âŠ• Head Pose Baseline</div>',
+        '<div style="font-size:12px;color:#999;margin-bottom:20px;">Sit naturally and look straight ahead.<br>Hold still while we measure.</div>',
+        gaugeRowHTML('Yaw',   'na-pc-yaw'),
+        gaugeRowHTML('Pitch', 'na-pc-pitch'),
+        gaugeRowHTML('Roll',  'na-pc-roll'),
+        '<div style="display:flex;align-items:center;gap:8px;margin:4px 0 20px;">',
+        '<span style="font-size:12px;color:#888;width:42px;flex-shrink:0;">Dist</span>',
+        '<div id="na-pc-dist-dot" style="width:9px;height:9px;border-radius:50%;background:#555;flex-shrink:0;transition:background 0.2s;"></div>',
+        '<span id="na-pc-dist-lbl" style="font-size:12px;font-weight:600;color:#888;transition:color 0.2s;">Warming upâ€¦</span>',
+        '</div>',
+        '<div style="font-size:11px;color:#666;margin-bottom:5px;letter-spacing:0.06em;text-transform:uppercase;">Stability</div>',
+        '<div style="height:7px;background:#1e1e1e;border-radius:4px;overflow:hidden;margin-bottom:9px;">',
+        '<div id="na-pc-stab-fill" style="height:100%;width:0%;background:#E77500;border-radius:4px;transition:width 0.12s linear,background 0.3s;"></div>',
+        '</div>',
+        '<div id="na-pc-stab-lbl" style="font-size:12px;color:#888;">Hold stillâ€¦</div>',
+    ].join('')
+    ui.overlay.appendChild(panel)
+
+    function setGauge(id, deg, maxDeg) {
+        var fill = panel.querySelector('#' + id + '-fill')
+        var val  = panel.querySelector('#' + id + '-val')
+        if (!fill || !val) return
+        var ratio = Math.min(Math.abs(deg) / maxDeg, 1.0)
+        var pct   = ratio * 50
+        var color = ratio < 0.30 ? '#3fb950' : ratio < 0.60 ? '#E77500' : '#f85149'
+        fill.style.left = (deg >= 0 ? 50 : 50 - pct) + '%'
+        fill.style.width = pct + '%'
+        fill.style.background = color
+        val.textContent = (deg >= 0 ? '+' : '') + Math.round(deg) + 'Â°'
+        val.style.color = color
+    }
+
+    function setDist(ratio) {
+        var dot = panel.querySelector('#na-pc-dist-dot')
+        var lbl = panel.querySelector('#na-pc-dist-lbl')
+        if (!dot || !lbl) return
+        var text, color
+        if      (ratio < 0.65)  { text = 'Too far';        color = '#f85149' }
+        else if (ratio < 0.85)  { text = 'Slightly far';   color = '#E77500' }
+        else if (ratio > 1.70)  { text = 'Too close';      color = '#f85149' }
+        else if (ratio > 1.25)  { text = 'Slightly close'; color = '#E77500' }
+        else                    { text = 'Good distance';  color = '#3fb950' }
+        dot.style.background = color
+        lbl.style.color = color; lbl.textContent = text
+    }
+
+    function setStability(progress, stable) {
+        var fill = panel.querySelector('#na-pc-stab-fill')
+        var lbl  = panel.querySelector('#na-pc-stab-lbl')
+        if (!fill || !lbl) return
+        fill.style.width = Math.round(progress * 100) + '%'
+        fill.style.background = !stable ? '#555' : (progress >= 1.0 ? '#3fb950' : '#E77500')
+        if (progress >= 1.0)   { lbl.textContent = 'âœ… Baseline captured!'; lbl.style.color = '#3fb950' }
+        else if (!stable)      { lbl.textContent = 'Hold stillâ€¦';           lbl.style.color = '#888'    }
+        else                   { lbl.textContent = 'Almost thereâ€¦';         lbl.style.color = '#E77500' }
+    }
+
+    await HeadPoseLayer.finalizeCalibration(function (s) {
+        setGauge('na-pc-yaw',   s.yaw,   HP_CONFIG.DEGRADE_YAW_LIMIT)
+        setGauge('na-pc-pitch', s.pitch, HP_CONFIG.DEGRADE_PITCH_LIMIT)
+        setGauge('na-pc-roll',  s.roll,  HP_CONFIG.DEGRADE_ROLL_LIMIT)
+        setDist(s.ipdRatio)
+        setStability(s.progress, s.stable)
+    })
+
+    setStability(1.0, true)
+    await new Promise(function (r) { setTimeout(r, 700) })
+    panel.remove()
+}
+
 /**
  * Run the full 5-point Princeton calibration wizard.
- * Returns a validation result object { medianPx, meanPx, samples }.
  */
 async function runPrincetonCalibration() {
     var ui = createPrincetonOverlay()
+    calibQuality.accepted = 0
+    calibQuality.rejected = 0
+    calibQuality.pointStddevs = []
+
+    // Begin accumulating pose samples for the head-pose baseline
+    if (HeadPoseLayer && HeadPoseLayer.isReady()) {
+        HeadPoseLayer.startCalibrationSampling()
+    }
 
     for (var i = 0; i < CAL_POINTS_5.length; i++) {
         var pt      = CAL_POINTS_5[i]
         var vp      = toViewportPoint(pt)
         var clicks  = CONFIG.CALIBRATION_CLICKS_PER_POINT
         var accepted = 0
+        var acceptedSamples = []
 
         // Update header step counter
         if (ui.stepEl) ui.stepEl.textContent = 'Point ' + (i + 1) + ' of ' + CAL_POINTS_5.length
@@ -449,43 +1304,87 @@ async function runPrincetonCalibration() {
             else              { p.style.background = '#333';    p.style.borderColor = '#555'    }
         })
 
-        ui.status.textContent = pt.label + ' — click the dot ' + clicks + ' times while staring at it'
+        ui.status.textContent = pt.label + ' â€” click the dot ' + clicks + ' times while staring at it'
 
         // Place the dot
         var dot = document.createElement('button')
         dot.type = 'button'
         dot.className = 'na-cal-dot'
         dot.textContent = String(clicks)
-        dot.style.left = pt.x + '%'
-        dot.style.top  = pt.y + '%'
+        dot.style.cssText = [
+            'position:fixed',
+            'left:' + pt.x + '%',
+            'top:' + pt.y + '%',
+            'width:36px', 'height:36px',
+            'border-radius:50%',
+            'background:#E77500',
+            'border:3px solid #fff',
+            'cursor:crosshair',
+            'z-index:2147483649',
+            'display:flex', 'align-items:center', 'justify-content:center',
+            'font-size:13px', 'font-weight:700', 'color:#fff',
+            'transform:translate(-50%,-50%)',
+            'padding:0', 'margin:0', 'outline:none'
+        ].join(';')
         ui.overlay.appendChild(dot)
 
         await new Promise(function (resolvePt) {
             dot.addEventListener('click', async function onClick() {
-                var mode     = getModeConfig()
-                var pred     = accepted >= 1 ? await getCurrentPredictionSafe() : null
-
-                // Outlier guard: skip if prediction is way off (only after first click)
-                if (pred) {
-                    var ex = pred.x - vp.x, ey = pred.y - vp.y
-                    if (Math.sqrt(ex * ex + ey * ey) > mode.outlierThresholdPx) {
-                        ui.status.textContent = 'Outlier detected — keep your gaze on the dot and try again'
+                if (activeFlags && activeFlags.calibration_quality_gates_v1) {
+                    var headSpeed = getCurrentHeadSpeedDegPerSec()
+                    var measurementRatio = getMeasurementRatio()
+                    var degradation = latestPrecisionLive.degradationScore || 0
+                    var gateFail = false
+                    if (degradation > CONFIG.CAL_QUALITY_MAX_DEGRADATION) gateFail = true
+                    if (measurementRatio < CONFIG.CAL_QUALITY_MIN_MEAS_RATIO) gateFail = true
+                    if (headSpeed > CONFIG.CAL_QUALITY_MAX_HEAD_SPEED) gateFail = true
+                    if (lastRawGaze) {
+                        var ex = lastRawGaze.x - vp.x
+                        var ey = lastRawGaze.y - vp.y
+                        var dist = Math.sqrt(ex * ex + ey * ey)
+                        if (dist > getModeConfig().outlierThresholdPx) gateFail = true
+                    }
+                    if (gateFail) {
+                        calibQuality.rejected += 1
                         dot.style.background = '#f85149'
-                        setTimeout(function () { dot.style.background = '#E77500' }, 400)
+                        ui.status.textContent = 'Sample rejected: hold still and keep gaze centered.'
+                        setTimeout(function () { dot.style.background = '#E77500' }, 220)
                         return
                     }
                 }
 
-                // Feed two samples per click for regression stability
-                window.webgazer.recordScreenPosition(vp.x, vp.y, 'click')
-                window.webgazer.recordScreenPosition(vp.x, vp.y, 'click')
+                // Send iris calibration sample to iris-tracker (2 samples per click)
+                document.dispatchEvent(new CustomEvent('na-cal-point', { detail: { screenX: vp.x, screenY: vp.y } }))
+                document.dispatchEvent(new CustomEvent('na-cal-point', { detail: { screenX: vp.x, screenY: vp.y } }))
                 accepted++
+                calibQuality.accepted += 1
+                if (lastRawGaze) acceptedSamples.push({ x: lastRawGaze.x, y: lastRawGaze.y })
 
                 var remaining = clicks - accepted
-                dot.textContent = remaining > 0 ? String(remaining) : '✓'
-                ui.status.textContent = pt.label + ' — ' + accepted + ' / ' + clicks + ' clicks'
+                dot.textContent = remaining > 0 ? String(remaining) : 'âœ“'
+                ui.status.textContent = pt.label + ' â€” ' + accepted + ' / ' + clicks + ' clicks'
 
                 if (accepted >= clicks) {
+                    if (activeFlags && activeFlags.calibration_quality_gates_v1) {
+                        var dists = acceptedSamples.map(function (s) {
+                            var dx = s.x - vp.x
+                            var dy = s.y - vp.y
+                            return Math.sqrt(dx * dx + dy * dy)
+                        })
+                        var pointStddev = stddev(dists)
+                        var maxStddev = getCalibrationVarianceThreshold()
+                        if (pointStddev > maxStddev) {
+                            calibQuality.rejected += 1
+                            accepted = Math.max(1, accepted - 1)
+                            dot.textContent = String(clicks - accepted)
+                            ui.status.textContent = 'Point unstable (stddev ' + Math.round(pointStddev) + 'px). Add one more stable click.'
+                            dot.style.background = '#f85149'
+                            setTimeout(function () { dot.style.background = '#E77500' }, 260)
+                            return
+                        }
+                        calibQuality.pointStddevs.push(pointStddev)
+                    }
+                    dot.style.background = '#3fb950'
                     dot.classList.add('na-cal-dot--done')
                     dot.removeEventListener('click', onClick)
                     await new Promise(function (r) { setTimeout(r, 250) })
@@ -496,15 +1395,158 @@ async function runPrincetonCalibration() {
         })
     }
 
-    // All pips green — done, go straight to tracking
+    // All pips green — signal offscreen to compute affine transform
     ui.pips.forEach(function (p) { p.style.background = '#3fb950'; p.style.borderColor = '#3fb950' })
+    ui.status.textContent = 'Computing iris calibration\u2026'
+
+    await new Promise(function (resolve) {
+        var TIMEOUT = 6000
+        var done = false
+        var timer = setTimeout(function () {
+            if (!done) { done = true; resolve() }
+        }, TIMEOUT)
+        function onCalReady() { if (!done) { done = true; clearTimeout(timer); resolve() } }
+        function onCalError() { if (!done) { done = true; clearTimeout(timer); resolve() } }
+        document.addEventListener('na-cal-ready',  onCalReady,  { once: true })
+        document.addEventListener('na-cal-error',  onCalError,  { once: true })
+        document.dispatchEvent(new CustomEvent('na-cal-complete'))
+    })
+
     if (ui.stepEl) ui.stepEl.textContent = 'Complete'
-    ui.status.textContent = '✅ All done! Starting tracking…'
-    await new Promise(function (r) { setTimeout(r, 600) })
+    ui.status.textContent = '\u2705 All done! Starting tracking\u2026'
+    await new Promise(function (r) { setTimeout(r, 500) })
     removeCalibrationOverlay()
 }
 
-// ─── Legacy overlay helpers (used by stop / cleanup) ─────────────────────────
+async function runPoseStage(ui, stage) {
+    var samples = []
+    var start = Date.now()
+    while (Date.now() - start < stage.durationMs) {
+        var s = HeadPoseLayer && HeadPoseLayer.getState ? HeadPoseLayer.getState() : null
+        if (s && typeof s.yaw === 'number' && typeof s.pitch === 'number' && typeof s.roll === 'number') {
+            samples.push(s)
+        }
+        var elapsed = Date.now() - start
+        var secsLeft = Math.max(0, Math.ceil((stage.durationMs - elapsed) / 1000))
+        ui.status.textContent = stage.instruction + ' (' + secsLeft + 's)'
+        await new Promise(function (r) { setTimeout(r, 120) })
+    }
+    return samples
+}
+
+function summarizePoseSamples(stageSamples) {
+    var stats = {
+        neutralYaw: 0,
+        neutralPitch: 0,
+        neutralRoll: 0,
+        leftYawMax: 0,
+        rightYawMax: 0,
+        upPitchMax: 0,
+        downPitchMax: 0,
+        ipdMedian: 1.0,
+        qualityScore: 0,
+    }
+    var neutral = stageSamples.neutral || []
+    var left = stageSamples.left || []
+    var right = stageSamples.right || []
+    var up = stageSamples.up || []
+    var down = stageSamples.down || []
+
+    if (neutral.length > 0) {
+        stats.neutralYaw = mean(neutral.map(function (s) { return s.yaw })) || 0
+        stats.neutralPitch = mean(neutral.map(function (s) { return s.pitch })) || 0
+        stats.neutralRoll = mean(neutral.map(function (s) { return s.roll })) || 0
+        stats.ipdMedian = median(neutral.map(function (s) { return s.ipdRatio })) || 1.0
+    }
+    if (left.length > 0) {
+        var leftYawMin = Math.min.apply(null, left.map(function (s) { return s.yaw }))
+        stats.leftYawMax = Math.abs(leftYawMin)
+    }
+    if (right.length > 0) {
+        var rightYawMax = Math.max.apply(null, right.map(function (s) { return s.yaw }))
+        stats.rightYawMax = Math.abs(rightYawMax)
+    }
+    if (up.length > 0) {
+        var upPitchMin = Math.min.apply(null, up.map(function (s) { return s.pitch }))
+        stats.upPitchMax = Math.abs(upPitchMin)
+    }
+    if (down.length > 0) {
+        var downPitchMax = Math.max.apply(null, down.map(function (s) { return s.pitch }))
+        stats.downPitchMax = Math.abs(downPitchMax)
+    }
+
+    var yawStrength = Math.min((Math.max(stats.leftYawMax, stats.rightYawMax) || 0) / 14, 1)
+    var pitchStrength = Math.min((Math.max(stats.upPitchMax, stats.downPitchMax) || 0) / 10, 1)
+    stats.qualityScore = parseFloat(((yawStrength * 0.6 + pitchStrength * 0.4) * 100).toFixed(1))
+    return stats
+}
+
+async function runNosePoseCalibrationMode() {
+    if (!HeadPoseLayer || !HeadPoseLayer.isReady || !HeadPoseLayer.isReady()) {
+        return { ok: false, reason: 'head_pose_not_ready' }
+    }
+
+    var ui = createPrincetonOverlay()
+    var instructionEl = ui.overlay.querySelector('#na-cal-instruction')
+    if (instructionEl) {
+        instructionEl.innerHTML = [
+            'Nose + head pose calibration.<br>',
+            'Keep eyes on screen center while moving your head as instructed.',
+        ].join('')
+    }
+
+    var stages = [
+        { id: 'neutral', instruction: 'Hold head neutral and still', durationMs: 2000 },
+        { id: 'left', instruction: 'Turn head left slightly', durationMs: 1800 },
+        { id: 'right', instruction: 'Turn head right slightly', durationMs: 1800 },
+        { id: 'up', instruction: 'Tilt chin up slightly', durationMs: 1600 },
+        { id: 'down', instruction: 'Tilt chin down slightly', durationMs: 1600 },
+    ]
+
+    var stageSamples = {}
+    for (var i = 0; i < stages.length; i++) {
+        var stage = stages[i]
+        if (ui.stepEl) ui.stepEl.textContent = 'Pose Step ' + (i + 1) + ' of ' + stages.length
+        ui.pips.forEach(function (p, idx) {
+            if (idx < i) { p.style.background = '#3fb950'; p.style.borderColor = '#3fb950' }
+            else if (idx === i) { p.style.background = '#E77500'; p.style.borderColor = '#E77500' }
+            else { p.style.background = '#333'; p.style.borderColor = '#555' }
+        })
+        stageSamples[stage.id] = await runPoseStage(ui, stage)
+        // Baseline is now captured by runPoseCalibrationStep via finalizeCalibration()
+    }
+
+    var stats = summarizePoseSamples(stageSamples)
+    var yawLimit = clamp(Math.max(stats.leftYawMax, stats.rightYawMax) * 0.8, 18, 40)
+    var pitchLimit = clamp(Math.max(stats.upPitchMax, stats.downPitchMax) * 0.8, 14, 32)
+    var rollLimit = clamp(Math.abs(stats.neutralRoll) + 12, 12, 24)
+
+    if (HeadPoseLayer && HeadPoseLayer.applyCalibrationProfile) {
+        HeadPoseLayer.applyCalibrationProfile({
+            yawLimit: yawLimit,
+            pitchLimit: pitchLimit,
+            rollLimit: rollLimit,
+        })
+    }
+
+    ui.pips.forEach(function (p) { p.style.background = '#3fb950'; p.style.borderColor = '#3fb950' })
+    if (ui.stepEl) ui.stepEl.textContent = 'Complete'
+    ui.status.textContent = 'Pose calibration complete (quality ' + stats.qualityScore + '%)'
+    await new Promise(function (r) { setTimeout(r, 700) })
+    removeCalibrationOverlay()
+
+    return {
+        ok: true,
+        stats: stats,
+        limits: {
+            yawLimit: parseFloat(yawLimit.toFixed(2)),
+            pitchLimit: parseFloat(pitchLimit.toFixed(2)),
+            rollLimit: parseFloat(rollLimit.toFixed(2)),
+        },
+    }
+}
+
+// â”€â”€â”€ Legacy overlay helpers (used by stop / cleanup) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function createCalibrationOverlay(title, subtitle) {
     // Thin shim so any remaining call-sites don't break.
@@ -587,7 +1629,7 @@ async function runCalibrationStage(stageName, points, clicksPerPoint) {
         dot.textContent = String(clicksPerPoint)
         ui.overlay.appendChild(dot)
 
-        ui.status.textContent = 'Point ' + (i + 1) + ' / ' + points.length + ' — accepted 0 / ' + clicksPerPoint
+        ui.status.textContent = 'Point ' + (i + 1) + ' / ' + points.length + ' â€” accepted 0 / ' + clicksPerPoint
 
         await new Promise(function (resolvePoint) {
             dot.addEventListener('click', async function () {
@@ -599,14 +1641,14 @@ async function runCalibrationStage(stageName, points, clicksPerPoint) {
                     setTimeout(function () {
                         dot.style.borderColor = '#2ea043'
                         dot.style.background = 'rgba(46, 160, 67, 0.25)'
-                        ui.status.textContent = 'Point ' + (i + 1) + ' / ' + points.length + ' — accepted ' + pointState.accepted + ' / ' + clicksPerPoint
+                        ui.status.textContent = 'Point ' + (i + 1) + ' / ' + points.length + ' â€” accepted ' + pointState.accepted + ' / ' + clicksPerPoint
                     }, 500)
                     return
                 }
 
                 var left = clicksPerPoint - pointState.accepted
-                dot.textContent = left > 0 ? String(left) : '✓'
-                ui.status.textContent = 'Point ' + (i + 1) + ' / ' + points.length + ' — accepted ' + pointState.accepted + ' / ' + clicksPerPoint
+                dot.textContent = left > 0 ? String(left) : 'âœ“'
+                ui.status.textContent = 'Point ' + (i + 1) + ' / ' + points.length + ' â€” accepted ' + pointState.accepted + ' / ' + clicksPerPoint
                 if (pointState.accepted >= clicksPerPoint) {
                     dot.style.background = 'rgba(46, 160, 67, 0.75)'
                     dot.style.borderColor = '#3fb950'
@@ -698,18 +1740,47 @@ async function runCalibrationAndValidation(_force) {
 
     calibrationPromise = (async function () {
         isCalibrating = true
+        // Reset iris tracker calibration state before new calibration run
+        document.dispatchEvent(new CustomEvent('na-cal-reset'))
+        console.log('[NeuralAdaptive] Starting iris calibration wizard')
         await clearWebGazerData()
         await runPrincetonCalibration()
+        var poseResult = await runNosePoseCalibrationMode()
+        var poseStats = poseResult && poseResult.stats ? poseResult.stats : null
+        var poseLimits = poseResult && poseResult.limits ? poseResult.limits : null
+        var totalCalSamples = calibQuality.accepted + calibQuality.rejected
+        var acceptRate = totalCalSamples > 0 ? (calibQuality.accepted / totalCalSamples) : 1
+        var pointVarianceMedianPx = medianCopy(calibQuality.pointStddevs) || 0
 
         // Await the storage write so shouldForceCalibration never races against it
         await new Promise(function (resolve) {
             chrome.storage.local.set({
                 calibrationVersion:  CONFIG.CALIBRATION_VERSION,
                 calibrationUpdatedAt: Date.now(),
+                calibQuality: {
+                    acceptRate: parseFloat(acceptRate.toFixed(3)),
+                    pointVarianceMedianPx: parseFloat(pointVarianceMedianPx.toFixed(2)),
+                    rejectedCount: calibQuality.rejected,
+                },
+                poseCalibrationVersion: CONFIG.POSE_CALIBRATION_VERSION,
+                poseCalibrationUpdatedAt: Date.now(),
+                poseCalibrationQualityScore: poseStats ? poseStats.qualityScore : null,
+                poseNeutralYaw: poseStats ? poseStats.neutralYaw : null,
+                poseNeutralPitch: poseStats ? poseStats.neutralPitch : null,
+                poseNeutralRoll: poseStats ? poseStats.neutralRoll : null,
+                poseYawLeftMax: poseStats ? poseStats.leftYawMax : null,
+                poseYawRightMax: poseStats ? poseStats.rightYawMax : null,
+                posePitchUpMax: poseStats ? poseStats.upPitchMax : null,
+                posePitchDownMax: poseStats ? poseStats.downPitchMax : null,
+                poseIpdMedian: poseStats ? poseStats.ipdMedian : null,
+                poseYawLimit: poseLimits ? poseLimits.yawLimit : null,
+                posePitchLimit: poseLimits ? poseLimits.pitchLimit : null,
+                poseRollLimit: poseLimits ? poseLimits.rollLimit : null,
             }, resolve)
         })
 
-        console.log('[NeuralAdaptive] Calibration saved — version', CONFIG.CALIBRATION_VERSION)
+        // Pose baseline already captured by runPoseCalibrationStep inside runPrincetonCalibration
+        console.log('[NeuralAdaptive] Calibration saved â€” version', CONFIG.CALIBRATION_VERSION)
         isCalibrating = false
     })()
 
@@ -721,28 +1792,208 @@ async function runCalibrationAndValidation(_force) {
     }
 }
 
-async function shouldForceCalibration(forceRequested) {
-    if (forceRequested) return true
-    return await new Promise(function (resolve) {
-        chrome.storage.local.get(['calibrationVersion'], function (data) {
-            // Only re-calibrate when the calibration schema version changes,
-            // not when accuracy is below threshold — prevents re-entry loops.
-            var hasVersion = data && data.calibrationVersion === CONFIG.CALIBRATION_VERSION
-            resolve(!hasVersion)
-        })
-    })
-}
-
+// Triggers camera permission prompt from the page context (where prompts are shown).
+// Offscreen documents can't show the prompt, so we request it here first.
 async function preflightCameraAccess() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Camera API unavailable')
     }
     var stream = await navigator.mediaDevices.getUserMedia({ video: true })
-    if (stream && stream.getTracks) {
-        stream.getTracks().forEach(function (track) {
-            try { track.stop() } catch (e) { }
+    stream.getTracks().forEach(function (t) { try { t.stop() } catch (e) {} })
+}
+
+async function shouldForceCalibration(forceRequested) {
+    if (forceRequested) return true
+    return await new Promise(function (resolve) {
+        chrome.storage.local.get(['calibrationVersion', 'poseCalibrationVersion'], function (data) {
+            // Only re-calibrate when the calibration schema version changes,
+            // not when accuracy is below threshold â€” prevents re-entry loops.
+            var hasVersion = data && data.calibrationVersion === CONFIG.CALIBRATION_VERSION
+            var hasPoseVersion = data && data.poseCalibrationVersion === CONFIG.POSE_CALIBRATION_VERSION
+            resolve(!hasVersion || !hasPoseVersion)
+        })
+    })
+}
+
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// RECOVERY MODULE â€” Visual Anchor Â· Contextual Breadcrumb Â· Peripheral Movement
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€ LKC updater: store closest paragraph to gaze every 2 s while focused â”€â”€â”€â”€â”€â”€
+function updateLKC() {
+    var el = null
+    if (smoothedPoint) el = DwellGrid.getParagraphAt(smoothedPoint.x, smoothedPoint.y)
+    if (!el) {
+        // Fallback: paragraph whose vertical centre is closest to viewport mid
+        var mid = window.innerHeight / 2
+        var best = Infinity
+        document.querySelectorAll('p').forEach(function (p) {
+            if (p.textContent.trim().length < 40) return
+            var r = p.getBoundingClientRect()
+            if (r.bottom < 0 || r.top > window.innerHeight) return
+            var d = Math.abs((r.top + r.bottom) / 2 - mid)
+            if (d < best) { best = d; el = p }
         })
     }
+    if (!el) return
+    LearningState.lastReadElement = el
+    LearningState.lastReadText    = (el.innerText || el.textContent || '').slice(0, 400)
+}
+
+// â”€â”€ Visual Anchor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function applyVisualAnchor() {
+    var el = LearningState.lastReadElement
+    if (!el) return
+    el.classList.add('na-visual-anchor')
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setTimeout(function () { el.classList.remove('na-visual-anchor') }, 3500)
+}
+
+// â”€â”€ Peripheral Movement overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function showPeripheralMovement() {
+    if (document.getElementById('na-peripheral-left')) return
+    var dismiss = document.createElement('button')
+    dismiss.id = 'na-peripheral-dismiss'
+    dismiss.textContent = 'âœ• Dismiss'
+    dismiss.addEventListener('click', hidePeripheralMovement)
+
+    var left  = document.createElement('div')
+    left.id   = 'na-peripheral-left'
+    var right = document.createElement('div')
+    right.id  = 'na-peripheral-right'
+    right.appendChild(dismiss)
+
+    document.body.appendChild(left)
+    document.body.appendChild(right)
+}
+
+function hidePeripheralMovement() {
+    ;['na-peripheral-left', 'na-peripheral-right', 'na-peripheral-dismiss'].forEach(function (id) {
+        var el = document.getElementById(id)
+        if (el) el.remove()
+    })
+}
+
+// â”€â”€ Breadcrumb toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function showBreadcrumbToast(text) {
+    hideBreadcrumbToast()
+    var toast = document.createElement('div')
+    toast.id = 'na-breadcrumb-toast'
+    toast.innerHTML = [
+        '<div class="na-toast-label">ðŸ“ Where you left off</div>',
+        '<div class="na-toast-body">' + escapeHtml(text) + '</div>',
+        '<button class="na-toast-close" aria-label="Dismiss">âœ•</button>',
+    ].join('')
+    toast.querySelector('.na-toast-close').addEventListener('click', hideBreadcrumbToast)
+    document.body.appendChild(toast)
+    // Auto-dismiss after 12 s
+    setTimeout(hideBreadcrumbToast, 12000)
+}
+
+function hideBreadcrumbToast() {
+    var el = document.getElementById('na-breadcrumb-toast')
+    if (el) el.remove()
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+// â”€â”€ Gemini breadcrumb request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function requestBreadcrumb() {
+    // Collect last 3 viewport snapshots + current LKC text
+    var history = LearningState.pageTextHistory.slice(-3).join(' ')
+    var text    = (history + ' ' + LearningState.lastReadText).trim().slice(0, 900)
+    if (!text) return
+
+    chrome.runtime.sendMessage({ type: 'BREADCRUMB_SUMMARY', text: text }, function (res) {
+        if (chrome.runtime.lastError || !res || !res.summary) return
+        // Store for display on re-entry (may arrive before gaze returns)
+        LearningState.breadcrumbText = res.summary
+        // If user already returned before Gemini responded, show immediately
+        if (!LearningState.isDistracted) showBreadcrumbToast(res.summary)
+    })
+}
+
+// â”€â”€ Gaze re-entry handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function onGazeReentry() {
+    LearningState.isDistracted    = false
+    LearningState.distractionStart = null
+    LearningState.level            = 0
+
+    hidePeripheralMovement()
+    applyVisualAnchor()
+
+    if (LearningState.breadcrumbText) {
+        showBreadcrumbToast(LearningState.breadcrumbText)
+        LearningState.breadcrumbText = null
+    }
+}
+
+// â”€â”€ Watchdog â€” runs every 500 ms to advance distraction levels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function startRecoveryModule() {
+    stopRecoveryModule()
+    lastGazeTimestamp = Date.now()
+
+    // LKC updater: store reading position every 2 s while focused
+    lkcIntervalId = setInterval(function () {
+        if (!isRunning || isCalibrating || LearningState.isDistracted) return
+        updateLKC()
+        // Keep a rolling text history for the breadcrumb context
+        var snap = getViewportText()
+        if (snap) {
+            LearningState.pageTextHistory.push(snap)
+            if (LearningState.pageTextHistory.length > 3) LearningState.pageTextHistory.shift()
+        }
+    }, 2000)
+
+    // Watchdog: detect absence and escalate distraction levels
+    watchdogIntervalId = setInterval(function () {
+        if (!isRunning || isCalibrating) return
+        var away = Date.now() - lastGazeTimestamp
+
+        if (away < 5000) {
+            // Gaze is present â€” reset if recovering from distraction
+            if (LearningState.isDistracted) onGazeReentry()
+            return
+        }
+
+        // â”€â”€ First threshold: 5 s away â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if (!LearningState.isDistracted) {
+            LearningState.isDistracted    = true
+            LearningState.distractionStart = Date.now() - away
+            LearningState.level            = 1
+            // Capture a fresh LKC snapshot right as they look away
+            updateLKC()
+        }
+
+        var timeAway = Date.now() - LearningState.distractionStart
+
+        // â”€â”€ Second threshold: 15 s â†’ Peripheral Movement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if (timeAway >= 15000 && LearningState.level < 2) {
+            LearningState.level = 2
+            showPeripheralMovement()
+        }
+
+        // â”€â”€ Third threshold: 20 s â†’ request Gemini breadcrumb â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if (timeAway >= 20000 && LearningState.level < 3) {
+            LearningState.level = 3
+            requestBreadcrumb()
+        }
+    }, 500)
+}
+
+function stopRecoveryModule() {
+    if (watchdogIntervalId) { clearInterval(watchdogIntervalId); watchdogIntervalId = null }
+    if (lkcIntervalId)      { clearInterval(lkcIntervalId);      lkcIntervalId      = null }
+    LearningState.isDistracted    = false
+    LearningState.distractionStart = null
+    LearningState.level            = 0
+    hidePeripheralMovement()
+    hideBreadcrumbToast()
 }
 
 async function startNeuralAdaptive(options) {
@@ -761,63 +2012,46 @@ async function startNeuralAdaptive(options) {
 
     isBooting = true
     try {
+        await loadFlagsFromStorage()
         injectStyles()
-        GazeSmoother.reset()
         DwellGrid.reset()
         GazeCursor.create()
-
-        if (webgazerInitialized && window.webgazer) {
-            // Already initialized — resume and re-wire listener; skip model reload
-            window.webgazer
-                .setGazeListener(onGaze)
-                .showPredictionPoints(false)   // cursor replaces the default dot
-            try { window.webgazer.resume() } catch (e) { }
-            smoothedPoint = null
-
-            var needCal = await shouldForceCalibration(!!options.forceRecalibrate)
-            if (needCal) await runCalibrationAndValidation(!!options.forceRecalibrate)
-        } else {
-            await ensureWebGazerLoaded()
-            if (!window.webgazer || typeof window.webgazer.setGazeListener !== 'function') {
-                throw new Error('webgazer global unavailable after load')
-            }
-
-            window.webgazer
-                .saveDataAcrossSessions(true)
-                .setGazeListener(onGaze)
-                .setTracker('TFFacemesh')
-                .setRegression('ridge')
-                .showVideoPreview(false)
-                .showPredictionPoints(false)   // cursor replaces the default dot
-
-            try {
-                if (navigator.permissions && navigator.permissions.query) {
-                    var camPerm = await navigator.permissions.query({ name: 'camera' })
-                    if (camPerm && camPerm.state === 'denied') {
-                        throw new Error('Camera permission denied')
-                    }
-                }
-            } catch (permErr) {
-                // If permissions API is unavailable, continue and let begin() decide.
-            }
-
-            await preflightCameraAccess()
-            await window.webgazer.begin()
-            webgazerInitialized = true
-            smoothedPoint = null
-
-            var needCal = await shouldForceCalibration(!!options.forceRecalibrate)
-            if (needCal) await runCalibrationAndValidation(!!options.forceRecalibrate)
+        _gazeSmoothed = null
+        smoothedPoint = null
+        lineSnapCache.ts = 0
+        lastLineId = null
+        resetDriftMap()
+        bindDriftResetListeners()
+        initResidualFusion()
+        resetAdaptiveKalman()
+        sessionMetrics = {
+            sessionId: String(Date.now()) + '_' + Math.floor(Math.random() * 1e6),
+            sessionStartTs: Date.now(),
+            jitterSamples: [],
+            lastFinalPoint: null,
+            lineSwitchTotal: 0,
+            lineSwitchSuspicious: 0,
+            interventionActivations: 0,
+            interventionFalseTriggers: 0,
         }
+        lastSessionMirrorTs = 0
+
+        // Inject FaceMesh + iris-tracker into page's MAIN world (uses page camera permission)
+        var trackResp = await chrome.runtime.sendMessage({ type: 'START_TRACKING' })
+        if (trackResp && !trackResp.ok) throw new Error(trackResp.error || 'injection failed')
+
+        var needCal = await shouldForceCalibration(!!options.forceRecalibrate)
+        if (needCal) await runCalibrationAndValidation(!!options.forceRecalibrate)
 
         isRunning = true
+        startRecoveryModule()
         console.log('[NeuralAdaptive] Tracking enabled')
     } catch (err) {
         var msg = err && err.message ? err.message : String(err)
         console.error('[NeuralAdaptive] Failed to start tracking:', msg)
-        if (/permission dismissed|notallowed|camera permission denied/i.test(msg)) {
-            console.error('[NeuralAdaptive] Camera permission is blocked/dismissed. Allow camera and try again.')
-            chrome.storage.local.set({ enabled: false }, function () { })
+        if (/permission dismissed|notallowed|camera api unavailable/i.test(msg)) {
+            console.error('[NeuralAdaptive] Camera permission blocked — allow camera and try again.')
+            chrome.storage.local.set({ enabled: false }, function () {})
         }
         isRunning = false
     } finally {
@@ -826,24 +2060,28 @@ async function startNeuralAdaptive(options) {
 }
 
 function stopNeuralAdaptive() {
-    if (window.webgazer) {
-        try { window.webgazer.clearGazeListener() } catch (e) { }
-        try { window.webgazer.showPredictionPoints(false) } catch (e) { }
-        try { window.webgazer.pause() } catch (e) { }
-    }
+    chrome.runtime.sendMessage({ type: 'STOP_TRACKING' }).catch(function () {})
 
-    GazeSmoother.reset()
     DwellGrid.reset()
     GazeCursor.hide()
+    stopRecoveryModule()
+    unbindDriftResetListeners()
 
     isRunning = false
     isBooting = false
     isCalibrating = false
     gazeBuffer = []
+    measurementHistory = []
     lastSendTime = 0
     lastDwellBoost = 0
+    interventionBlockedUntil = 0
+    degradationSpikeStreak = 0
+    interventionCandidateTier = null
+    interventionCandidateCount = 0
     currentTier = 'CALM'
     smoothedPoint = null
+    _gazeSmoothed = null
+    lastSessionMirrorTs = 0
     clearAllInterventions()
     removeCalibrationOverlay()
     console.log('[NeuralAdaptive] Tracking disabled')
@@ -861,60 +2099,46 @@ function clearAllInterventions() {
     })
 }
 
-// Dwell callback — fires when gaze stays in one grid sector for DWELL_THRESHOLD_MS
+// Dwell callback â€” fires when gaze stays in one grid sector for DWELL_THRESHOLD_MS
 DwellGrid.onDwellCb = function (sector, x, y) {
     if (!isRunning || isCalibrating) return
     var para = DwellGrid.getParagraphAt(x, y)
     console.log('[NeuralAdaptive] Dwell sector', sector, para ? 'on <' + para.tagName + '>' : '(no para)')
-    // Dwell on a paragraph counts as a heavy fixation signal — boost the next score flush
+    // Dwell on a paragraph counts as a heavy fixation signal â€” boost the next score flush
     if (para) lastDwellBoost = Date.now()
+
+    if (!latestFrameState) return
+    if (!(activeFlags && (activeFlags.drift_map_v1 || activeFlags.residual_fusion_v1))) return
+    var qualityOk = (latestFrameState.readingScore >= CONFIG.DRIFT_ANCHOR_QUALITY_READING) &&
+        (latestFrameState.degradationScore <= CONFIG.DRIFT_ANCHOR_QUALITY_DEGRAD) &&
+        (latestFrameState.measurementRatio >= CONFIG.DRIFT_ANCHOR_QUALITY_MEAS)
+    if (!qualityOk) return
+    if (!latestFrameState.lineSnapUsed || typeof latestFrameState.anchorX !== 'number' || typeof latestFrameState.anchorY !== 'number') return
+
+    var rawX = latestFrameState.preSnapX
+    var rawY = latestFrameState.preSnapY
+    var anchorX = latestFrameState.anchorX
+    var anchorY = latestFrameState.anchorY
+    var residual = Math.sqrt(Math.pow(anchorX - rawX, 2) + Math.pow(anchorY - rawY, 2))
+    var huberK = 50
+    var w = residual <= huberK ? 1 : (huberK / residual)
+    driftMap.anchors.push({ rawX: rawX, rawY: rawY, anchorX: anchorX, anchorY: anchorY, weight: w, ts: Date.now() })
+    if (driftMap.anchors.length > 160) driftMap.anchors.shift()
+
+    if (activeFlags.drift_map_v1) maybeUpdateDriftModel()
+    if (activeFlags.residual_fusion_v1 && latestFrameState.residualFeatures) {
+        var dx = anchorX - rawX
+        var dy = anchorY - rawY
+        trainResidualFusion(latestFrameState.residualFeatures, dx, dy)
+        residualFusion.residualHistory.push(Math.sqrt(dx * dx + dy * dy))
+        if (residualFusion.residualHistory.length > 80) residualFusion.residualHistory.shift()
+    }
 }
 
 var lastDwellBoost = 0   // timestamp of most recent dwell event
 
-function onGaze(data) {
-    if (!data || !isRunning || isCalibrating) return
-
-    // ── 1. Smooth raw coordinates (α = 0.15 low-pass filter) ──────────────
-    var smooth = GazeSmoother.update(data.x, data.y)
-    smoothedPoint = smooth                  // keep legacy alias in sync
-
-    // ── 2. Move the Princeton-orange cursor ring ───────────────────────────
-    GazeCursor.move(smooth.x, smooth.y)
-
-    // ── 3. Spatial binning — sector dwell detection ────────────────────────
-    DwellGrid.update(smooth.x, smooth.y)
-
-    // ── 4. Push to signal buffer ───────────────────────────────────────────
-    var point = { x: smooth.x, y: smooth.y, t: Date.now() }
-    gazeBuffer.push(point)
-    if (gazeBuffer.length > CONFIG.SAMPLE_BUFFER_SIZE) gazeBuffer.shift()
-
-    // ── 5. Throttled stress scoring ────────────────────────────────────────
-    var now = Date.now()
-    if (now - lastSendTime < CONFIG.SEND_INTERVAL_MS) return
-    lastSendTime = now
-    if (gazeBuffer.length < 10) return
-
-    var signals = computeSignals(gazeBuffer)
-
-    // Dwell boost: if a sector dwell fired recently, inflate fixation signal
-    if (now - lastDwellBoost < CONFIG.SEND_INTERVAL_MS * 1.5) {
-        signals.fixation = Math.min(signals.fixation + 0.25, 1.0)
-    }
-
-    var score = (signals.fixation * 0.45) + (signals.saccade * 0.35) + (signals.regression * 0.20)
-    score = parseFloat(Math.min(Math.max(score, 0), 1.0).toFixed(3))
-    var tier = score < 0.3 ? 'CALM' : score < 0.6 ? 'ELEVATED' : 'OVERLOAD'
-
-    chrome.runtime.sendMessage({
-        type: 'STRESS_SCORE',
-        score: score,
-        signals: signals
-    }).catch(function () { })
-
-    applyIntervention(tier)
-}
+// onGazeState retained as no-op stub; gaze is now driven by onGazeUpdate via GAZE_UPDATE messages.
+function onGazeState(state) { onGazeUpdate(state) }
 
 function computeSignals(buffer) {
     var recent = buffer.slice(-30)
@@ -951,7 +2175,65 @@ function computeSignals(buffer) {
     }
 }
 
-function applyIntervention(tier) {
+function shouldAllowIntervention(state) {
+    var now = Date.now()
+    var measurementRatio = typeof state.measurementRatio === 'number' ? state.measurementRatio : getMeasurementRatio()
+    var readingScore = typeof state.readingScore === 'number' ? state.readingScore : 0
+    var degradation = typeof state.degradationScore === 'number' ? state.degradationScore : 0
+    var degraded = !!state.isTrackerDegraded
+    var readingOk = state.isReading !== false && readingScore >= CONFIG.INTERVENTION_MIN_READING_SCORE
+    var measurementOk = measurementRatio >= CONFIG.INTERVENTION_MIN_MEAS_RATIO
+    var degradationOk = !degraded && degradation <= CONFIG.INTERVENTION_MAX_DEGRADATION
+    if (degradation > 0.9) degradationSpikeStreak += 1
+    else degradationSpikeStreak = 0
+
+    // Enter a short quiet period whenever tracking quality drops.
+    if (!measurementOk || !degradationOk) {
+        interventionBlockedUntil = now + CONFIG.INTERVENTION_QUIET_MS
+    } else if (degradationSpikeStreak >= 2) {
+        interventionBlockedUntil = now + CONFIG.INTERVENTION_QUIET_MS * 2
+    }
+    var blocked = now < interventionBlockedUntil
+    latestPrecisionLive.interventionBlocked = blocked
+    if (blocked) return false
+    return readingOk && measurementOk && degradationOk
+}
+
+function applyInterventionStable(tier, state) {
+    var allow = shouldAllowIntervention(state)
+    var targetTier = allow ? tier : 'CALM'
+    var goingDownFromOverload = currentTier === 'OVERLOAD' && targetTier !== 'OVERLOAD'
+    var requiredTicks = CONFIG.INTERVENTION_CONFIRM_TICKS
+    if (activeFlags && activeFlags.intervention_hysteresis_v2 && goingDownFromOverload) {
+        requiredTicks = 3
+    }
+
+    if (targetTier === currentTier) {
+        interventionCandidateTier = null
+        interventionCandidateCount = 0
+        return
+    }
+
+    if (interventionCandidateTier !== targetTier) {
+        interventionCandidateTier = targetTier
+        interventionCandidateCount = 1
+        return
+    }
+
+    interventionCandidateCount += 1
+    if (interventionCandidateCount < requiredTicks) return
+
+    interventionCandidateTier = null
+    interventionCandidateCount = 0
+    if (targetTier !== 'CALM') {
+        sessionMetrics.interventionActivations += 1
+        var falseTrigger = (state.readingScore < CONFIG.INTERVENTION_MIN_READING_SCORE) || !!state.isTrackerDegraded || latestPrecisionLive.interventionBlocked
+        if (falseTrigger) sessionMetrics.interventionFalseTriggers += 1
+    }
+    applyIntervention(targetTier, allow && state.isReading)
+}
+
+function applyIntervention(tier, isReading) {
     if (tier === currentTier) return
     currentTier = tier
     var el = findReadingContent()
@@ -971,7 +2253,9 @@ function applyIntervention(tier) {
     }
     el.classList.add('na-overload')
     applySentenceHighlight(el)
-    triggerGeminiTooltip(el)
+    // ReadingPattern gate: only fetch Gemini summary when actively reading
+    // (prevents tooltip spam during zone-out or static staring)
+    if (isReading !== false) triggerGeminiTooltip(el)
 }
 
 function findReadingContent() {
@@ -1096,6 +2380,7 @@ chrome.storage.onChanged.addListener(function (changes, areaName) {
     if (areaName !== 'local') return
     if (changes.enabled) applyEnabledState(!!changes.enabled.newValue)
     if (changes.accuracyMode) applyAccuracyMode(changes.accuracyMode.newValue)
+    if (changes.na_flags) activeFlags = mergeFlags(changes.na_flags.newValue)
 })
 
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
@@ -1108,6 +2393,23 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
             calibrating: isCalibrating,
             mode: activeAccuracyMode,
         })
+        return
+    }
+
+    if (message.type === 'NA_GET_PRECISION_LIVE') {
+        sendResponse({
+            measurementRatio: parseFloat((latestPrecisionLive.measurementRatio || 0).toFixed(3)),
+            readingScore: parseFloat((latestPrecisionLive.readingScore || 0).toFixed(3)),
+            degradationScore: parseFloat((latestPrecisionLive.degradationScore || 0).toFixed(3)),
+            snapDistancePx: parseFloat((latestPrecisionLive.snapDistancePx || 0).toFixed(2)),
+            interventionBlocked: !!latestPrecisionLive.interventionBlocked,
+            ts: latestPrecisionLive.ts || 0,
+        })
+        return
+    }
+
+    if (message.type === 'NA_GET_SESSION_METRICS') {
+        sendResponse(buildSessionMetricsSnapshot())
         return
     }
 
@@ -1128,10 +2430,65 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
         })()
         return true
     }
+
+    if (message.type === 'NA_POSE_CALIBRATE') {
+        ; (async function () {
+            if (!isRunning) {
+                await startNeuralAdaptive()
+            }
+            isCalibrating = true
+            try {
+                var poseResult = await runNosePoseCalibrationMode()
+                if (!poseResult || !poseResult.ok) {
+                    sendResponse({ ok: false, error: poseResult && poseResult.reason ? poseResult.reason : 'pose calibration unavailable' })
+                    return
+                }
+                var poseStats = poseResult && poseResult.stats ? poseResult.stats : null
+                var poseLimits = poseResult && poseResult.limits ? poseResult.limits : null
+                await new Promise(function (resolve) {
+                    chrome.storage.local.set({
+                        poseCalibrationVersion: CONFIG.POSE_CALIBRATION_VERSION,
+                        poseCalibrationUpdatedAt: Date.now(),
+                        poseCalibrationQualityScore: poseStats ? poseStats.qualityScore : null,
+                        poseNeutralYaw: poseStats ? poseStats.neutralYaw : null,
+                        poseNeutralPitch: poseStats ? poseStats.neutralPitch : null,
+                        poseNeutralRoll: poseStats ? poseStats.neutralRoll : null,
+                        poseYawLeftMax: poseStats ? poseStats.leftYawMax : null,
+                        poseYawRightMax: poseStats ? poseStats.rightYawMax : null,
+                        posePitchUpMax: poseStats ? poseStats.upPitchMax : null,
+                        posePitchDownMax: poseStats ? poseStats.downPitchMax : null,
+                        poseIpdMedian: poseStats ? poseStats.ipdMedian : null,
+                        poseYawLimit: poseLimits ? poseLimits.yawLimit : null,
+                        posePitchLimit: poseLimits ? poseLimits.pitchLimit : null,
+                        poseRollLimit: poseLimits ? poseLimits.rollLimit : null,
+                    }, resolve)
+                })
+                sendResponse({ ok: true, poseResult: poseResult })
+            } catch (e) {
+                sendResponse({ ok: false, error: e && e.message ? e.message : String(e) })
+            } finally {
+                isCalibrating = false
+            }
+        })()
+        return true
+    }
 })
 
-chrome.storage.local.get(['enabled', 'accuracyMode'], function (data) {
+// ── DOM event bridge from iris-tracker.js (MAIN world) ───────────────────────
+document.addEventListener('na-gaze', function (e) {
+    onGazeUpdate(e.detail)
+})
+document.addEventListener('na-tracking-error', function (e) {
+    var msg = e.detail && e.detail.error ? e.detail.error : 'unknown error'
+    console.error('[NeuralAdaptive] Tracker error:', msg)
+    if (/permission|notallowed/i.test(msg)) {
+        chrome.storage.local.set({ enabled: false }, function () {})
+    }
+})
+
+chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags'], function (data) {
     applyAccuracyMode(data && data.accuracyMode ? data.accuracyMode : 'balanced')
+    activeFlags = mergeFlags(data && data.na_flags)
     var enabled = !!(data && data.enabled)
     if (!enabled) {
         console.log('[NeuralAdaptive] Disabled by default. Use popup to enable.')

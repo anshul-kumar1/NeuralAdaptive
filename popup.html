@@ -20,6 +20,9 @@
     <button id="recalibrateBtn" class="recalibrate" type="button">
       Recalibrate
     </button>
+    <button id="poseCalibrateBtn" class="recalibrate" type="button">
+      Calibrate Nose + Pose
+    </button>
 
     <label for="modeSelect" class="label">Accuracy mode</label>
     <select id="modeSelect" class="select">
@@ -29,6 +32,24 @@
 
     <p id="statusText" class="status">Checking state...</p>
     <p id="calibrationText" class="calibration">Calibration: unknown</p>
+    <p id="poseCalibrationText" class="calibration">Pose calibration: unknown</p>
+
+    <section class="metrics">
+      <h2>Precision Live</h2>
+      <p id="liveStale" class="stale">Live: waiting…</p>
+      <div class="metricRow"><span>measurementRatio</span><strong id="mMeasurement">--</strong></div>
+      <div class="metricRow"><span>readingScore</span><strong id="mReading">--</strong></div>
+      <div class="metricRow"><span>degradationScore</span><strong id="mDegradation">--</strong></div>
+      <div class="metricRow"><span>snapDistancePx</span><strong id="mSnap">--</strong></div>
+      <div class="metricRow"><span>interventionBlocked</span><strong id="mBlocked">--</strong></div>
+    </section>
+
+    <section class="metrics">
+      <h2>Session Metrics</h2>
+      <div class="metricRow"><span>median jitter (px)</span><strong id="sJitter">--</strong></div>
+      <div class="metricRow"><span>line-switch error rate</span><strong id="sLineErr">--</strong></div>
+      <div class="metricRow"><span>false-trigger rate</span><strong id="sFalse">--</strong></div>
+    </section>
   </main>
   <script src="popup.js"></script>
 </body>

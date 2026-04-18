@@ -88,3 +88,42 @@ h1 {
   font-size: 11px;
   color: #8b949e;
 }
+
+.metrics {
+  margin-top: 10px;
+  border-top: 1px solid #30363d;
+  padding-top: 8px;
+}
+
+.metrics h2 {
+  margin: 2px 0 6px 0;
+  font-size: 11px;
+  color: #9aa4af;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.metricRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.metricRow strong {
+  color: #e6edf3;
+  font-weight: 700;
+}
+
+.good { color: #3fb950 !important; }
+.warn { color: #E77500 !important; }
+.bad { color: #f85149 !important; }
+
+.stale {
+  margin: 0 0 6px 0;
+  font-size: 11px;
+  color: #8b949e;
+}

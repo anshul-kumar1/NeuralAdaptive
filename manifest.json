@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "NeuralAdaptive",
-    "version": "2.2.0",
+    "version": "3.0.0",
     "description": "Eye-tracking responsive reading interface for students with dyslexia and ADHD.",
     "permissions": [
         "activeTab",
@@ -28,10 +28,8 @@
     "web_accessible_resources": [
         {
             "resources": [
-                "webgazer.js",
                 "mediapipe/face_mesh/*",
-                "models/blazeface/*",
-                "models/facemesh/*"
+                "iris-tracker.js"
             ],
             "matches": [
                 "<all_urls>"
