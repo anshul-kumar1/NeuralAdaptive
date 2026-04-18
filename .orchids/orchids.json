@@ -1,0 +1,7 @@
+{
+  "startupCommands": [
+    "cd /home/user/app/spectrum-server && npm install; node server.js"
+  ],
+  "projectId": "d720e7c2-ccea-42c9-a4e8-422dcaa77752",
+  "templateId": "any"
+}

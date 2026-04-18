@@ -1,5 +1,6 @@
 var toggleBtn = document.getElementById('toggleBtn')
 var progressBarBtn = document.getElementById('progressBarBtn')
+var finishSessionBtn = document.getElementById('finishSessionBtn')
 var statusText = document.getElementById('statusText')
 var recalibrateBtn = document.getElementById('recalibrateBtn')
 var poseCalibrateBtn = document.getElementById('poseCalibrateBtn')
@@ -158,6 +159,29 @@ toggleBtn.addEventListener('click', function () {
                 }
             })
         })
+    })
+})
+
+finishSessionBtn.addEventListener('click', function () {
+    finishSessionBtn.disabled = true
+    var prevLabel = finishSessionBtn.textContent
+    finishSessionBtn.textContent = 'Sending...'
+    statusText.textContent = 'Building session summary...'
+    sendToActiveTab({ type: 'NA_FINISH_SESSION' }, function (ok, response) {
+        finishSessionBtn.disabled = false
+        finishSessionBtn.textContent = prevLabel
+        if (!ok) {
+            statusText.textContent = 'Finish requires an http(s) page with the extension active.'
+            return
+        }
+        if (response && response.ok) {
+            var p = response.payload || {}
+            statusText.textContent = 'Sent. ' + (p.durationSeconds || 0) + 's, ' +
+                (p.paragraphsRead || 0) + ' paragraphs, peak ' + (p.peakTier || 'CALM') + '.'
+        } else {
+            var err = (response && response.error) ? response.error : 'unknown error'
+            statusText.textContent = 'Send failed: ' + err
+        }
     })
 })
 

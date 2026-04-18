@@ -1186,6 +1186,7 @@ function onGazeUpdate(data) {
     }).catch(function () {})
 
     var tier = score < 0.3 ? 'CALM' : score < 0.6 ? 'ELEVATED' : 'OVERLOAD'
+    recordSessionSample(score, tier)
     var state = {
         isReading: readingScore >= CONFIG.INTERVENTION_MIN_READING_SCORE,
         readingScore: readingScore,
@@ -2418,6 +2419,7 @@ var progressBarFillEl = null
 var progressBadgeEl = null
 var progressLoopTimer = null
 var progressFarthestIndex = -1
+var progressTotalParagraphs = 0
 var progressCachedRootSig = null
 var PROGRESS_POLL_MS = 500
 var PROGRESS_MIN_PARAGRAPHS = 3
@@ -2464,8 +2466,10 @@ function progressUpdateUi(currentIdx, total) {
     progressBadgeEl.textContent = n + ' / ' + total
 }
 
+// Reading position tracker — always runs, regardless of whether the progress
+// bar UI is visible. The session summary needs this data even when the bar
+// is toggled off.
 function progressTick() {
-    if (!progressBarActive) return
     var paragraphs = progressCollectParagraphs()
     if (!paragraphs) {
         progressLoopTimer = setTimeout(progressTick, PROGRESS_POLL_MS)
@@ -2477,9 +2481,10 @@ function progressTick() {
         progressCachedRootSig = sig
         progressFarthestIndex = -1
     }
+    progressTotalParagraphs = paragraphs.length
     var idx = progressPickCurrentIndex(paragraphs)
     if (idx > progressFarthestIndex) progressFarthestIndex = idx
-    progressUpdateUi(idx, paragraphs.length)
+    if (progressBarActive) progressUpdateUi(idx, paragraphs.length)
     progressLoopTimer = setTimeout(progressTick, PROGRESS_POLL_MS)
 }
 
@@ -2506,18 +2511,12 @@ function startProgressBar() {
         if (progressBarEl) progressBarEl.classList.add('na-progress-visible')
         if (progressBadgeEl) progressBadgeEl.classList.add('na-progress-visible')
     }, 50)
-    if (progressLoopTimer) clearTimeout(progressLoopTimer)
-    progressTick()
-    console.log('[NeuralAdaptive] Reading Progress ON')
+    console.log('[NeuralAdaptive] Reading Progress UI ON')
 }
 
 function stopProgressBar() {
     if (!progressBarActive) return
     progressBarActive = false
-    if (progressLoopTimer) {
-        clearTimeout(progressLoopTimer)
-        progressLoopTimer = null
-    }
     if (progressBarEl) {
         progressBarEl.classList.remove('na-progress-visible')
         var bar = progressBarEl
@@ -2531,9 +2530,9 @@ function stopProgressBar() {
         setTimeout(function () { if (badge && badge.parentNode) badge.parentNode.removeChild(badge) }, 500)
         progressBadgeEl = null
     }
-    progressFarthestIndex = -1
-    progressCachedRootSig = null
-    console.log('[NeuralAdaptive] Reading Progress OFF')
+    // NOTE: we deliberately keep progressFarthestIndex and the tick loop running
+    // so the session summary still has "paragraphs read" data even with UI off.
+    console.log('[NeuralAdaptive] Reading Progress UI OFF')
 }
 
 function setProgressBar(active) {
@@ -2542,7 +2541,183 @@ function setProgressBar(active) {
 }
 
 var TIER_RANK = { CALM: 0, ELEVATED: 1, OVERLOAD: 2 }
+var TIER_NAMES = ['CALM', 'ELEVATED', 'OVERLOAD']
 var maxTypographyTier = 'CALM'
+
+// ── Session aggregation for the Spectrum companion iMessage ──────────────────
+// Samples stress score + tier on every STRESS_SCORE dispatch (~600ms). Keeps
+// running average, peak tier, time-in-tier durations, a capped timestamped
+// score history (for binning into a stress timeline), and tier transitions
+// (for the reading-coach agent to reason about rough patches).
+var SESSION_HISTORY_CAP = 3000
+var sessionAgg = {
+    startTs: Date.now(),
+    scoreSum: 0,
+    scoreCount: 0,
+    peakRank: 0,
+    tierDurationMs: { CALM: 0, ELEVATED: 0, OVERLOAD: 0 },
+    lastTierTs: Date.now(),
+    lastTier: 'CALM',
+    scoreHistory: [],   // [{ t: ms, score: 0..1, tier: 'CALM'|... }]
+    transitions: [],    // [{ atMs, from, to }]
+}
+
+function resetSessionAggregation() {
+    var now = Date.now()
+    sessionAgg = {
+        startTs: now,
+        scoreSum: 0,
+        scoreCount: 0,
+        peakRank: 0,
+        tierDurationMs: { CALM: 0, ELEVATED: 0, OVERLOAD: 0 },
+        lastTierTs: now,
+        lastTier: 'CALM',
+        scoreHistory: [],
+        transitions: [],
+    }
+}
+
+function recordSessionSample(score, tier) {
+    var now = Date.now()
+    if (typeof score === 'number' && isFinite(score)) {
+        sessionAgg.scoreSum += score
+        sessionAgg.scoreCount += 1
+        if (sessionAgg.scoreHistory.length < SESSION_HISTORY_CAP) {
+            sessionAgg.scoreHistory.push({ t: now, score: score, tier: tier })
+        }
+    }
+    var rank = TIER_RANK[tier] != null ? TIER_RANK[tier] : 0
+    if (rank > sessionAgg.peakRank) sessionAgg.peakRank = rank
+    var dt = Math.max(0, now - sessionAgg.lastTierTs)
+    if (sessionAgg.tierDurationMs[sessionAgg.lastTier] != null) {
+        sessionAgg.tierDurationMs[sessionAgg.lastTier] += dt
+    }
+    if (tier !== sessionAgg.lastTier) {
+        sessionAgg.transitions.push({ atMs: now, from: sessionAgg.lastTier, to: tier })
+    }
+    sessionAgg.lastTierTs = now
+    sessionAgg.lastTier = tier
+}
+
+// Compress the raw score history into N bins of (startSec, endSec, avgScore,
+// dominantTier). The reading-coach agent uses this to locate rough patches
+// without having to page through thousands of raw samples.
+function buildStressTimeline(history, startTs, endTs, nBins) {
+    if (!history || history.length === 0 || endTs <= startTs) return []
+    var span = endTs - startTs
+    var binMs = span / nBins
+    var bins = []
+    for (var i = 0; i < nBins; i++) {
+        bins.push({ sum: 0, count: 0, tierCounts: { CALM: 0, ELEVATED: 0, OVERLOAD: 0 } })
+    }
+    for (var j = 0; j < history.length; j++) {
+        var s = history[j]
+        var idx = Math.min(nBins - 1, Math.max(0, Math.floor((s.t - startTs) / binMs)))
+        bins[idx].sum += s.score
+        bins[idx].count += 1
+        if (bins[idx].tierCounts[s.tier] != null) bins[idx].tierCounts[s.tier] += 1
+    }
+    var out = []
+    for (var k = 0; k < nBins; k++) {
+        var b = bins[k]
+        var avg = b.count > 0 ? b.sum / b.count : 0
+        var tier = 'CALM'
+        if (b.tierCounts.OVERLOAD > b.tierCounts.ELEVATED && b.tierCounts.OVERLOAD > b.tierCounts.CALM) tier = 'OVERLOAD'
+        else if (b.tierCounts.ELEVATED > b.tierCounts.CALM) tier = 'ELEVATED'
+        out.push({
+            startSec: Math.round((k * binMs) / 1000),
+            endSec: Math.round(((k + 1) * binMs) / 1000),
+            avgScore: parseFloat(avg.toFixed(3)),
+            samples: b.count,
+            tier: tier,
+        })
+    }
+    return out
+}
+
+function buildSessionSummary() {
+    var now = Date.now()
+    // Flush the time spent in the current tier since the last sample.
+    var dt = Math.max(0, now - sessionAgg.lastTierTs)
+    if (sessionAgg.tierDurationMs[sessionAgg.lastTier] != null) {
+        sessionAgg.tierDurationMs[sessionAgg.lastTier] += dt
+    }
+    sessionAgg.lastTierTs = now
+
+    var totalMs = sessionAgg.tierDurationMs.CALM +
+                  sessionAgg.tierDurationMs.ELEVATED +
+                  sessionAgg.tierDurationMs.OVERLOAD
+    var denom = totalMs > 0 ? totalMs : 1
+    var tierBreakdown = {
+        calm: 100 * sessionAgg.tierDurationMs.CALM / denom,
+        elevated: 100 * sessionAgg.tierDurationMs.ELEVATED / denom,
+        overload: 100 * sessionAgg.tierDurationMs.OVERLOAD / denom,
+    }
+
+    var peakTier = TIER_NAMES[sessionAgg.peakRank] || 'CALM'
+    var averageScore = sessionAgg.scoreCount > 0
+        ? sessionAgg.scoreSum / sessionAgg.scoreCount
+        : 0
+
+    // Words-read estimate + paragraph samples: the reading-coach agent uses
+    // these to reference specific content when writing the debrief.
+    var paragraphsRead = Math.max(0, progressFarthestIndex + 1)
+    var paragraphsTotal = progressTotalParagraphs || 0
+    var wordsRead = 0
+    var paragraphSamples = []
+    var PARA_TEXT_CAP = 260        // chars per paragraph snippet
+    var PARA_SAMPLE_CAP = 30       // max paragraph samples in payload
+    var paragraphs = progressCollectParagraphs()
+    if (paragraphs) {
+        var cap = Math.min(paragraphsRead, paragraphs.length)
+        // Evenly sample up to PARA_SAMPLE_CAP across the range the reader covered.
+        var stride = cap > PARA_SAMPLE_CAP ? Math.ceil(cap / PARA_SAMPLE_CAP) : 1
+        for (var i = 0; i < cap; i++) {
+            var full = (paragraphs[i].innerText || '').trim()
+            if (!full) continue
+            var wc = full.split(/\s+/).length
+            wordsRead += wc
+            if (i % stride === 0) {
+                paragraphSamples.push({
+                    index: i,
+                    text: full.length > PARA_TEXT_CAP ? full.slice(0, PARA_TEXT_CAP) + '…' : full,
+                    wordCount: wc,
+                })
+            }
+        }
+    }
+
+    var durationSeconds = Math.round((now - sessionAgg.startTs) / 1000)
+    var stressTimeline = buildStressTimeline(sessionAgg.scoreHistory, sessionAgg.startTs, now, 15)
+    var tierTransitions = sessionAgg.transitions.map(function (t) {
+        return {
+            atSec: Math.round((t.atMs - sessionAgg.startTs) / 1000),
+            from: t.from,
+            to: t.to,
+        }
+    })
+
+    return {
+        sessionType: 'reading',
+        durationSeconds: durationSeconds,
+        averageScore: parseFloat(averageScore.toFixed(3)),
+        peakTier: peakTier,
+        tierBreakdown: {
+            calm: parseFloat(tierBreakdown.calm.toFixed(1)),
+            elevated: parseFloat(tierBreakdown.elevated.toFixed(1)),
+            overload: parseFloat(tierBreakdown.overload.toFixed(1)),
+        },
+        interventionCount: sessionMetrics.interventionActivations || 0,
+        paragraphsRead: paragraphsRead,
+        paragraphsTotal: paragraphsTotal,
+        wordsRead: wordsRead,
+        pageTitle: document.title || '',
+        // Rich context for the reading-coach agent on the Spectrum server.
+        stressTimeline: stressTimeline,
+        tierTransitions: tierTransitions,
+        paragraphSamples: paragraphSamples,
+    }
+}
 
 function applyIntervention(tier, isReading) {
     if (tier === currentTier) return
@@ -2928,6 +3103,41 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
         return
     }
 
+    if (message.type === 'NA_FINISH_SESSION') {
+        var payload = buildSessionSummary()
+        // Require at least 15 seconds of session to avoid spamming during dev.
+        // The user asked for a 30s threshold; we honour it unless force is set.
+        var MIN_DURATION = message.force ? 0 : 15
+        if (payload.durationSeconds < MIN_DURATION) {
+            sendResponse({
+                ok: false,
+                error: 'Session too short (< ' + MIN_DURATION + 's). Keep reading.',
+                payload: payload,
+            })
+            return
+        }
+        chrome.runtime.sendMessage({
+            type: 'NA_SEND_SESSION_SUMMARY',
+            payload: payload,
+        }, function (bgResponse) {
+            if (chrome.runtime.lastError) {
+                sendResponse({ ok: false, error: chrome.runtime.lastError.message, payload: payload })
+                return
+            }
+            if (bgResponse && bgResponse.ok) {
+                resetSessionAggregation()
+                sendResponse({ ok: true, payload: payload })
+            } else {
+                sendResponse({
+                    ok: false,
+                    error: (bgResponse && bgResponse.error) || 'unknown error',
+                    payload: payload,
+                })
+            }
+        })
+        return true
+    }
+
     if (message.type === 'NA_RECALIBRATE') {
         ; (async function () {
             if (!isRunning) {
@@ -3035,6 +3245,10 @@ document.addEventListener('na-tracking-error', function (e) {
     }
 })
 
+// Start the always-on reading position tracker. It feeds both the progress bar
+// (when the UI is on) and the "paragraphs read" metric in the session summary.
+if (!progressLoopTimer) progressTick()
+
 chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgress'], function (data) {
     if (chrome.runtime.lastError) {
         console.warn('[NeuralAdaptive] storage unavailable in this frame:', chrome.runtime.lastError.message)
@@ -3043,7 +3257,6 @@ chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgres
     applyAccuracyMode(data && data.accuracyMode ? data.accuracyMode : 'balanced')
     activeFlags = mergeFlags(data && data.na_flags)
     if (data && data.readingProgress) {
-        // Progress bar runs without eye tracking (falls back to viewport center).
         startProgressBar()
     }
     var enabled = !!(data && data.enabled)

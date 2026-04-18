@@ -89,6 +89,36 @@ h1 {
   border-color: #E77500;
 }
 
+/* Finish Session — sends the iMessage summary via the Spectrum server */
+.finish {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid rgba(63, 185, 80, 0.45);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: rgba(63, 185, 80, 0.08);
+  color: #3fb950;
+  letter-spacing: 0.02em;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.finish:hover {
+  background: rgba(63, 185, 80, 0.16);
+}
+
+.finish:active {
+  background: #2a8f3f;
+  color: #0d1117;
+}
+
+.finish:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .status {
   margin: 10px 2px 2px 2px;
   font-size: 12px;

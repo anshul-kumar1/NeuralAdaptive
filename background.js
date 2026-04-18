@@ -136,8 +136,52 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
         return true
     }
 
+    if (message.type === 'NA_SEND_SESSION_SUMMARY') {
+        postSessionSummary(message.payload).then(function (result) {
+            sendResponse({ ok: true, result: result })
+        }).catch(function (err) {
+            var msg = err && err.message ? err.message : String(err)
+            console.error('[NeuralAdaptive] session summary POST failed:', msg, {
+                payload: message.payload,
+                error: err,
+            })
+            sendResponse({ ok: false, error: msg })
+        })
+        return true
+    }
+
     return false
 })
+
+// ── Photon Spectrum companion server ─────────────────────────────────────────
+// Hardcoded for hackathon; spectrum-server/ on localhost:3847.
+var SPECTRUM_URL = 'http://localhost:3847/session-complete'
+
+async function postSessionSummary(payload) {
+    if (!payload || typeof payload !== 'object') {
+        throw new Error('Empty session payload')
+    }
+    var res
+    try {
+        res = await fetch(SPECTRUM_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+    } catch (err) {
+        throw new Error('Cannot reach spectrum-server at ' + SPECTRUM_URL +
+            '. Is it running? (' + (err && err.message ? err.message : err) + ')')
+    }
+    if (!res.ok) {
+        var errText = ''
+        try { errText = await res.text() } catch (_) {}
+        throw new Error('spectrum-server ' + res.status +
+            (errText ? ': ' + errText.slice(0, 200) : ''))
+    }
+    var data = null
+    try { data = await res.json() } catch (_) {}
+    return data
+}
 
 // ── Dedalus (Claude) routing ──────────────────────────────────────────────────
 // Dedalus exposes an OpenAI-compatible chat completions endpoint. The API key
