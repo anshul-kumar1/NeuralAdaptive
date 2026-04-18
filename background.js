@@ -1,173 +1,141 @@
-//service worker, message router
-// background.js — Service Worker
-// Responsibilities:
-//   1. Create (and recreate) the offscreen document that runs MediaPipe
-//   2. Route stress score messages from offscreen → content.js in the active tab
-//   3. Call Gemini API when content.js requests a paragraph summary
-//
-// IMPORTANT: Service workers sleep after ~30s of inactivity.
-// Variables reset on every wake. Use chrome.storage for anything that must persist.
-
-const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html')
-
-// ─── Offscreen Document Management ────────────────────────────────────────────
+﻿var OFFSCREEN_URL = chrome.runtime.getURL("offscreen.html");
+var lastForwardTime = 0;
 
 async function ensureOffscreenDocument() {
-    // Chrome only allows ONE offscreen document at a time.
-    // Always check before creating — calling create() twice throws an error.
-    const existing = await chrome.offscreen.hasDocument()
-    if (existing) return
+  var exists = await chrome.offscreen.hasDocument();
+  if (exists) {
+    console.log("[background] Offscreen document already exists");
+    return;
+  }
 
-    await chrome.offscreen.createDocument({
-        url: OFFSCREEN_URL,
-        // DISPLAY_MEDIA or USER_MEDIA reason is required to justify webcam access.
-        reasons: [chrome.offscreen.Reason.USER_MEDIA],
-        justification: 'Camera feed required for MediaPipe Pose landmark detection'
-    })
-
-    console.log('[background] Offscreen document created')
+  console.log("[background] Creating offscreen document");
+  await chrome.offscreen.createDocument({
+    url: OFFSCREEN_URL,
+    reasons: [chrome.offscreen.Reason.USER_MEDIA],
+    justification: "Camera feed for MediaPipe Pose",
+  });
+  console.log("[background] Offscreen document created");
 }
 
-// ─── Extension Startup ────────────────────────────────────────────────────────
+chrome.runtime.onInstalled.addListener(async function () {
+  console.log("[background] onInstalled");
+  await ensureOffscreenDocument();
+});
 
-// Fires when Chrome first installs or re-enables the extension.
-chrome.runtime.onInstalled.addListener(async () => {
-    console.log('[background] NeuralAdaptive installed')
-    await ensureOffscreenDocument()
-    // Tell the offscreen doc to boot the camera.
-    // Small delay because the document needs a moment to initialize its listeners.
-    setTimeout(() => {
-        chrome.runtime.sendMessage({ type: 'START_CAMERA' }).catch(() => {
-            // Ignore — offscreen doc may not be ready yet on very first install
-        })
-    }, 500)
-})
+chrome.runtime.onStartup.addListener(async function () {
+  console.log("[background] onStartup");
+  await ensureOffscreenDocument();
+});
 
-// Fires when the browser starts (extension was already installed).
-chrome.runtime.onStartup.addListener(async () => {
-    console.log('[background] Browser started, booting NeuralAdaptive')
-    await ensureOffscreenDocument()
-    setTimeout(() => {
-        chrome.runtime.sendMessage({ type: 'START_CAMERA' }).catch(() => { })
-    }, 500)
-})
+chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+  if (message.type === "OFFSCREEN_READY") {
+    console.log("[background] OFFSCREEN_READY received; sending START_CAMERA");
+    chrome.runtime.sendMessage({ type: "START_CAMERA" }).catch(function (error) {
+      console.error("[background] START_CAMERA failed: " + error.message);
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
 
-// ─── Message Router ───────────────────────────────────────────────────────────
-//
-// All inter-component communication flows through here.
-// Think of background.js as the switchboard — it never acts on its own,
-// it just routes messages between offscreen.js and content.js.
+  if (message.type === "STRESS_SCORE") {
+    handleStressScore(message)
+      .then(function () {
+        sendResponse({ ok: true });
+      })
+      .catch(function (error) {
+        console.error("[background] handleStressScore failed: " + error.message);
+        sendResponse({ ok: false, error: error.message });
+      });
+    return true;
+  }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "SUMMARIZE_PARAGRAPH") {
+    callGemini(message.text)
+      .then(function (summary) {
+        sendResponse({ summary: summary });
+      })
+      .catch(function (error) {
+        sendResponse({ summary: null, error: error.message });
+      });
+    return true;
+  }
 
-    // ── From offscreen.js: new stress score computed ──
-    if (message.type === 'STRESS_SCORE') {
-        handleStressScore(message)
-        sendResponse({ ok: true })
-        return false // synchronous response, don't keep channel open
-    }
+  if (message.type === "SET_BASELINE") {
+    chrome.runtime.sendMessage({ type: "SET_BASELINE" }).catch(function () {});
+    sendResponse({ ok: true });
+    return false;
+  }
 
-    // ── From content.js: summarize this paragraph via Gemini ──
-    if (message.type === 'SUMMARIZE_PARAGRAPH') {
-        // Must return true to keep the message channel open for async response
-        callGemini(message.text).then(summary => {
-            sendResponse({ summary })
-        }).catch(err => {
-            console.error('[background] Gemini error:', err)
-            sendResponse({ summary: null, error: err.message })
-        })
-        return true // keep channel open for async sendResponse
-    }
-
-    // ── From sidepanel.html: user clicked Calibrate ──
-    if (message.type === 'SET_BASELINE') {
-        chrome.runtime.sendMessage({ type: 'SET_BASELINE' }).catch(() => { })
-        sendResponse({ ok: true })
-        return false
-    }
-
-    // ── From sidepanel.html: toggle interventions on/off ──
-    if (message.type === 'TOGGLE_ACTIVE') {
-        chrome.storage.local.set({ interventionsActive: message.active })
-        sendResponse({ ok: true })
-        return false
-    }
-})
-
-// ─── Stress Score Handler ─────────────────────────────────────────────────────
-
-// Throttle tracker — we only forward a message to content.js every 2 seconds
-// even though offscreen.js sends scores more frequently during development.
-let lastForwardTime = 0
+  return false;
+});
 
 async function handleStressScore(message) {
-    const { score, signals } = message
-    const now = Date.now()
+  var score = message.score;
+  var signals = message.signals;
+  var now = Date.now();
+  var tier = score < 0.3 ? "CALM" : score < 0.6 ? "ELEVATED" : "OVERLOAD";
 
-    // Determine intervention tier
-    const tier = score < 0.3 ? 'CALM' : score < 0.6 ? 'ELEVATED' : 'OVERLOAD'
+  await chrome.storage.local.set({
+    currentScore: score,
+    currentTier: tier,
+    signals: signals,
+    lastUpdated: now,
+  });
 
-    // Persist current state so sidepanel.html can read it at any time
-    await chrome.storage.local.set({
-        currentScore: score,
-        currentTier: tier,
-        signals: signals,
-        lastUpdated: now
+  if (now - lastForwardTime < 2000) {
+    return;
+  }
+  lastForwardTime = now;
+
+  var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  var activeTab = tabs[0];
+  if (!activeTab || !activeTab.id) {
+    return;
+  }
+  if (!activeTab.url || activeTab.url.indexOf("http") !== 0) {
+    return;
+  }
+
+  console.log(
+    "[background] Forwarding intervention to tab " + activeTab.id +
+      " tier=" + tier + " score=" + score
+  );
+
+  chrome.tabs
+    .sendMessage(activeTab.id, {
+      type: "INTERVENTION",
+      tier: tier,
+      score: score,
+      signals: signals,
     })
-
-    // Throttle forwarding to content.js — no need to hammer the DOM
-    if (now - lastForwardTime < 2000) return
-    lastForwardTime = now
-
-    // Get the active tab and forward the intervention instruction
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!activeTab?.id) return
-
-    // Don't inject into chrome:// or extension pages — content.js won't be there
-    if (!activeTab.url?.startsWith('http')) return
-
-    chrome.tabs.sendMessage(activeTab.id, {
-        type: 'INTERVENTION',
-        tier,
-        score,
-        signals
-    }).catch(() => {
-        // Tab may not have content.js yet (e.g. brand new tab still loading)
-        // This is expected and safe to ignore
-    })
+    .catch(function (error) {
+      console.warn("[background] Tab message failed: " + error.message);
+    });
 }
 
-// ─── Gemini API ───────────────────────────────────────────────────────────────
-//
-// API key lives HERE and ONLY here.
-// content.js sends the paragraph text, we make the fetch, we send back the bullets.
-// Never expose this key in content.js — it would be visible in Chrome DevTools.
-
-const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE' // ← replace before demo
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`
+var GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE";
+var GEMINI_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
+  GEMINI_API_KEY;
 
 async function callGemini(paragraphText) {
-    const prompt = `You are a reading assistant helping a student with ADHD or dyslexia.
-Summarize the following paragraph into exactly 3 short bullet points.
-Each bullet must be under 12 words. Use plain, simple language.
-Return ONLY the 3 bullets, nothing else. No preamble. No labels.
+  var prompt =
+    "Summarize this paragraph into exactly 3 bullet points, each under 12 words. Return ONLY the bullets.\n\n" +
+    paragraphText;
 
-Paragraph:
-"${paragraphText}"`
+  var response = await fetch(GEMINI_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
+    }),
+  });
 
-    const response = await fetch(GEMINI_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.3, maxOutputTokens: 150 }
-        })
-    })
+  if (!response.ok) {
+    throw new Error("Gemini status " + response.status);
+  }
 
-    if (!response.ok) {
-        throw new Error(`Gemini API returned ${response.status}`)
-    }
-
-    const data = await response.json()
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? 'Could not summarize.'
+  var data = await response.json();
+  return data.candidates[0].content.parts[0].text;
 }
