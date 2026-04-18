@@ -1,54 +1,51 @@
-// content.js — NeuralAdaptive v2.2.0
-// On-demand eye tracking with two-stage calibration + validation gate.
+// content.js — NeuralAdaptive v2.3.0
+// Stability layer: GazeSmoother + DwellGrid + Princeton calibration wizard.
 
-console.log('[NeuralAdaptive v2.2.0] content.js loaded')
+console.log('[NeuralAdaptive v2.3.0] content.js loaded')
 
 var CONFIG = {
-    SEND_INTERVAL_MS: 2000,
-    FIXATION_THRESHOLD_PX: 60,
-    FIXATION_STRESS_DURATION_MS: 3000,
-    SACCADE_HIGH_VELOCITY: 800,
-    SAMPLE_BUFFER_SIZE: 90,
-    REGRESSION_WINDOW: 20,
-    CALIBRATION_VERSION: 'two_stage_v1',
-    CALIBRATION_CLICKS_PER_POINT: 3,
-    VALIDATION_THRESHOLD_PX: 110,
-    MAX_FORCED_RECALIBRATION_ATTEMPTS: 2,
+    SEND_INTERVAL_MS:              1000,
+    FIXATION_THRESHOLD_PX:         60,
+    FIXATION_STRESS_DURATION_MS:   1500,
+    SACCADE_HIGH_VELOCITY:         500,
+    SAMPLE_BUFFER_SIZE:            90,
+    REGRESSION_WINDOW:             20,
+    CALIBRATION_VERSION:           'princeton_v1',
+    CALIBRATION_CLICKS_PER_POINT:  5,
+    VALIDATION_THRESHOLD_PX:       160,
+    MAX_FORCED_RECALIBRATION_ATTEMPTS: 1,
+    GAZE_SMOOTHING_FACTOR:         0.15,   // low-pass α — lower = smoother/slower
+    DWELL_THRESHOLD_MS:            1500,   // ms in same grid sector to fire dwell event
+    GRID_COLS:                     3,
+    GRID_ROWS:                     4,
 }
 
 var ACCURACY_MODE = {
     balanced: {
-        alpha: 0.45,
-        outlierThresholdPx: 180,
-        validationThresholdPx: 110,
+        alpha:                0.15,   // overridden by GazeSmoother; kept for legacy paths
+        outlierThresholdPx:   220,
+        validationThresholdPx: 160,
     },
     precision: {
-        alpha: 0.25,
-        outlierThresholdPx: 130,
-        validationThresholdPx: 85,
+        alpha:                0.10,
+        outlierThresholdPx:   160,
+        validationThresholdPx: 100,
     },
 }
 
-var CAL_STAGE_1 = [
-    { x: 5, y: 5 }, { x: 50, y: 5 }, { x: 95, y: 5 },
-    { x: 5, y: 50 }, { x: 50, y: 50 }, { x: 95, y: 50 },
-    { x: 5, y: 95 }, { x: 50, y: 95 }, { x: 95, y: 95 },
+// 5-point Princeton calibration wizard (TL → TR → Center → BL → BR)
+var CAL_POINTS_5 = [
+    { x: 5,  y: 5,  label: 'Top Left'     },
+    { x: 95, y: 5,  label: 'Top Right'    },
+    { x: 50, y: 50, label: 'Center'       },
+    { x: 5,  y: 95, label: 'Bottom Left'  },
+    { x: 95, y: 95, label: 'Bottom Right' },
 ]
 
-var CAL_STAGE_2 = [
-    { x: 50, y: 50 },
-    { x: 35, y: 50 },
-    { x: 65, y: 50 },
-    { x: 50, y: 35 },
-    { x: 50, y: 65 },
-]
-
+// Legacy validation points (kept for popup display)
 var VALIDATION_POINTS = [
-    { x: 20, y: 20 },
-    { x: 80, y: 20 },
-    { x: 50, y: 50 },
-    { x: 20, y: 80 },
-    { x: 80, y: 80 },
+    { x: 20, y: 20 }, { x: 80, y: 20 }, { x: 50, y: 50 },
+    { x: 20, y: 80 }, { x: 80, y: 80 },
 ]
 
 var gazeBuffer = []
@@ -60,9 +57,127 @@ var isBooting = false
 var isRunning = false
 var isCalibrating = false
 var activeAccuracyMode = 'balanced'
-var smoothedPoint = null
+var smoothedPoint = null       // legacy alias — kept so existing call-sites compile
 var calibrationPromise = null
 var webgazerInitialized = false
+
+// ─── GazeSmoother ─────────────────────────────────────────────────────────────
+// Single-pole IIR low-pass filter.  α = 0.15 means each new frame contributes
+// 15% and the history 85%, yielding ~6-frame smoothing at 30 fps.
+var GazeSmoother = {
+    x:      null,
+    y:      null,
+
+    /** Feed raw WebGazer coordinates; returns smoothed {x, y}. */
+    update: function (rawX, rawY) {
+        if (this.x === null) {
+            this.x = rawX
+            this.y = rawY
+            return { x: rawX, y: rawY }
+        }
+        var a = CONFIG.GAZE_SMOOTHING_FACTOR
+        this.x = this.x * (1 - a) + rawX * a
+        this.y = this.y * (1 - a) + rawY * a
+        return { x: this.x, y: this.y }
+    },
+
+    reset: function () { this.x = null; this.y = null }
+}
+
+// ─── GazeCursor ───────────────────────────────────────────────────────────────
+// Princeton-orange ring that follows the smoothed gaze point.
+// WebGazer's built-in red dot is hidden; this replaces it with a styled ring.
+var GazeCursor = {
+    el: null,
+
+    create: function () {
+        if (document.getElementById('na-gaze-cursor')) return
+        var el = document.createElement('div')
+        el.id = 'na-gaze-cursor'
+        document.body.appendChild(el)
+        this.el = el
+    },
+
+    move: function (x, y) {
+        if (!this.el) return
+        // left/top are centre-anchored via CSS transform: translate(-50%,-50%)
+        this.el.style.left    = Math.round(x) + 'px'
+        this.el.style.top     = Math.round(y) + 'px'
+        this.el.style.display = 'block'
+    },
+
+    hide: function () {
+        if (this.el) this.el.style.display = 'none'
+    },
+
+    destroy: function () {
+        var el = document.getElementById('na-gaze-cursor')
+        if (el) el.remove()
+        this.el = null
+    }
+}
+
+// ─── DwellGrid ────────────────────────────────────────────────────────────────
+// Divides the viewport into GRID_COLS × GRID_ROWS sectors.
+// Fires onDwell(sectorId, x, y) only when the smoothed gaze stays inside the
+// same sector for DWELL_THRESHOLD_MS — eliminating spurious fixation signals.
+var DwellGrid = {
+    currentSector: null,
+    dwellTimer:    null,
+    onDwellCb:     null,
+
+    /**
+     * Call once per gaze frame.
+     * @param {number} x  smoothed viewport X
+     * @param {number} y  smoothed viewport Y
+     */
+    update: function (x, y) {
+        var sector = this._sector(x, y)
+        if (sector !== this.currentSector) {
+            // Left the previous sector — cancel any pending dwell
+            if (this.dwellTimer) { clearTimeout(this.dwellTimer); this.dwellTimer = null }
+            this.currentSector = sector
+
+            if (this.onDwellCb) {
+                var self = this
+                var capturedX = x
+                var capturedY = y
+                this.dwellTimer = setTimeout(function () {
+                    self.dwellTimer = null
+                    self.onDwellCb(sector, capturedX, capturedY)
+                }, CONFIG.DWELL_THRESHOLD_MS)
+            }
+        }
+    },
+
+    /**
+     * Returns the <p> element (if any) at viewport coordinates (x, y).
+     * Useful for knowing which paragraph the student has dwelled on.
+     */
+    getParagraphAt: function (x, y) {
+        var el = document.elementFromPoint(x, y)
+        while (el && el !== document.body) {
+            if (el.tagName === 'P') return el
+            el = el.parentElement
+        }
+        return null
+    },
+
+    /**
+     * Maps (x, y) → integer sector ID  0 … (COLS × ROWS − 1),
+     * column-major within each row.
+     */
+    _sector: function (x, y) {
+        var col = Math.min(Math.floor(x / window.innerWidth  * CONFIG.GRID_COLS), CONFIG.GRID_COLS - 1)
+        var row = Math.min(Math.floor(y / window.innerHeight * CONFIG.GRID_ROWS), CONFIG.GRID_ROWS - 1)
+        return row * CONFIG.GRID_COLS + col
+    },
+
+    reset: function () {
+        if (this.dwellTimer) { clearTimeout(this.dwellTimer); this.dwellTimer = null }
+        this.currentSector = null
+    }
+}
 
 function getModeConfig() {
     return ACCURACY_MODE[activeAccuracyMode] || ACCURACY_MODE.balanced
@@ -88,6 +203,44 @@ function injectStyles() {
     var style = document.createElement('style')
     style.id = 'na-styles'
     style.textContent = [
+        // Gaze cursor — Princeton orange ring, centre-anchored
+        '#na-gaze-cursor {',
+        '  position: fixed;',
+        '  width: 22px; height: 22px;',
+        '  border-radius: 50%;',
+        '  border: 3px solid #E77500;',
+        '  background: rgba(231, 117, 0, 0.18);',
+        '  pointer-events: none;',
+        '  z-index: 2147483645;',
+        '  transform: translate(-50%, -50%);',
+        '  display: none;',
+        '  box-shadow: 0 0 8px rgba(231,117,0,0.5);',
+        '}',
+
+        // Princeton calibration wizard dots
+        '@keyframes na-cal-pulse {',
+        '  0%,100% { transform: translate(-50%,-50%) scale(1);   box-shadow: 0 0 0 0 rgba(231,117,0,0.7); }',
+        '  50%      { transform: translate(-50%,-50%) scale(1.15); box-shadow: 0 0 0 12px rgba(231,117,0,0); }',
+        '}',
+        '.na-cal-dot {',
+        '  position: fixed;',
+        '  width: 30px; height: 30px;',
+        '  border-radius: 50%;',
+        '  background: #E77500;',
+        '  border: 3px solid #fff;',
+        '  transform: translate(-50%, -50%);',
+        '  cursor: crosshair;',
+        '  z-index: 2147483648;',
+        '  animation: na-cal-pulse 1.2s ease-in-out infinite;',
+        '  display: flex; align-items: center; justify-content: center;',
+        '  font-size: 11px; font-weight: 700; color: #fff;',
+        '}',
+        '.na-cal-dot.na-cal-dot--done {',
+        '  background: #3fb950;',
+        '  animation: none;',
+        '}',
+
+        // Intervention classes
         '.na-elevated p { line-height: 1.9 !important; letter-spacing: 0.04em !important; transition: all 0.6s ease !important; }',
         '.na-overload p { line-height: 2.1 !important; letter-spacing: 0.12em !important; max-width: 66ch !important; transition: all 0.6s ease !important; }',
         '.na-sentence { transition: opacity 0.4s ease; display: inline; }',
@@ -159,15 +312,208 @@ async function collectCalibrationSample(targetX, targetY, pointState) {
     return { accepted: true, reason: 'ok' }
 }
 
+// ─── Princeton Calibration Wizard ─────────────────────────────────────────────
+// Builds the full-screen overlay.  Returns { overlay, status, progressDots }.
+
+function createPrincetonOverlay() {
+    removeCalibrationOverlay()
+
+    var overlay = document.createElement('div')
+    overlay.id = 'na-cal-overlay'
+    Object.assign(overlay.style, {
+        position:   'fixed',
+        inset:      '0',
+        zIndex:     '2147483647',
+        background: '#0d0d0d',
+        color:      '#fff',
+        fontFamily: '"Segoe UI", system-ui, sans-serif',
+        userSelect: 'none',
+    })
+
+    // ── Header bar ──────────────────────────────────────────────────────────
+    var header = document.createElement('div')
+    Object.assign(header.style, {
+        position:       'fixed',
+        top:            '0',
+        left:           '0',
+        right:          '0',
+        padding:        '16px 24px',
+        background:     'linear-gradient(90deg,#1a1a1a,#2a1a00)',
+        borderBottom:   '2px solid #E77500',
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'space-between',
+        pointerEvents:  'none',
+    })
+    header.innerHTML = [
+        '<div style="display:flex;align-items:center;gap:10px;">',
+        '  <div style="width:28px;height:28px;border-radius:50%;background:#E77500;',
+        '       display:flex;align-items:center;justify-content:center;',
+        '       font-size:14px;font-weight:900;color:#fff;">N</div>',
+        '  <span style="font-size:16px;font-weight:700;letter-spacing:0.04em;">NeuralAdaptive</span>',
+        '  <span style="font-size:11px;color:#E77500;font-weight:600;',
+        '       text-transform:uppercase;letter-spacing:0.12em;">Eye Setup</span>',
+        '</div>',
+        '<div id="na-cal-step" style="font-size:12px;color:#aaa;"></div>',
+    ].join('')
+    overlay.appendChild(header)
+
+    // ── Progress pip row ─────────────────────────────────────────────────────
+    var pipRow = document.createElement('div')
+    Object.assign(pipRow.style, {
+        position:       'fixed',
+        top:            '64px',
+        left:           '50%',
+        transform:      'translateX(-50%)',
+        display:        'flex',
+        gap:            '10px',
+        pointerEvents:  'none',
+    })
+    var pips = CAL_POINTS_5.map(function () {
+        var pip = document.createElement('div')
+        Object.assign(pip.style, {
+            width: '10px', height: '10px',
+            borderRadius: '50%',
+            background: '#333',
+            border: '2px solid #555',
+            transition: 'background 0.3s, border-color 0.3s',
+        })
+        pipRow.appendChild(pip)
+        return pip
+    })
+    overlay.appendChild(pipRow)
+
+    // ── Center instructional card ────────────────────────────────────────────
+    var card = document.createElement('div')
+    Object.assign(card.style, {
+        position:     'fixed',
+        top:          '50%',
+        left:         '50%',
+        transform:    'translate(-50%,-50%)',
+        textAlign:    'center',
+        pointerEvents:'none',
+    })
+    card.innerHTML = [
+        '<div style="font-size:28px;font-weight:800;color:#E77500;margin-bottom:8px;">',
+        '  Eye Tracking Setup',
+        '</div>',
+        '<div id="na-cal-instruction" style="font-size:15px;color:#ccc;max-width:420px;line-height:1.6;">',
+        '  Stare directly at each <b style="color:#E77500">orange dot</b>',
+        '  and click it <b style="color:#fff">5 times</b>.<br>',
+        '  Keep your head still throughout.',
+        '</div>',
+    ].join('')
+    overlay.appendChild(card)
+
+    // ── Status bar ───────────────────────────────────────────────────────────
+    var status = document.createElement('div')
+    status.id = 'na-cal-status'
+    Object.assign(status.style, {
+        position:   'fixed',
+        bottom:     '22px',
+        left:       '50%',
+        transform:  'translateX(-50%)',
+        fontSize:   '13px',
+        color:      '#888',
+        textAlign:  'center',
+        minWidth:   '320px',
+        pointerEvents: 'none',
+    })
+    status.textContent = 'Preparing…'
+    overlay.appendChild(status)
+
+    document.body.appendChild(overlay)
+    return { overlay: overlay, status: status, pips: pips, stepEl: header.querySelector('#na-cal-step') }
+}
+
+/**
+ * Run the full 5-point Princeton calibration wizard.
+ * Returns a validation result object { medianPx, meanPx, samples }.
+ */
+async function runPrincetonCalibration() {
+    var ui = createPrincetonOverlay()
+
+    for (var i = 0; i < CAL_POINTS_5.length; i++) {
+        var pt      = CAL_POINTS_5[i]
+        var vp      = toViewportPoint(pt)
+        var clicks  = CONFIG.CALIBRATION_CLICKS_PER_POINT
+        var accepted = 0
+
+        // Update header step counter
+        if (ui.stepEl) ui.stepEl.textContent = 'Point ' + (i + 1) + ' of ' + CAL_POINTS_5.length
+
+        // Mark current pip orange
+        ui.pips.forEach(function (p, idx) {
+            if (idx < i)      { p.style.background = '#3fb950'; p.style.borderColor = '#3fb950' }
+            else if (idx === i){ p.style.background = '#E77500'; p.style.borderColor = '#E77500' }
+            else              { p.style.background = '#333';    p.style.borderColor = '#555'    }
+        })
+
+        ui.status.textContent = pt.label + ' — click the dot ' + clicks + ' times while staring at it'
+
+        // Place the dot
+        var dot = document.createElement('button')
+        dot.type = 'button'
+        dot.className = 'na-cal-dot'
+        dot.textContent = String(clicks)
+        dot.style.left = pt.x + '%'
+        dot.style.top  = pt.y + '%'
+        ui.overlay.appendChild(dot)
+
+        await new Promise(function (resolvePt) {
+            dot.addEventListener('click', async function onClick() {
+                var mode     = getModeConfig()
+                var pred     = accepted >= 1 ? await getCurrentPredictionSafe() : null
+
+                // Outlier guard: skip if prediction is way off (only after first click)
+                if (pred) {
+                    var ex = pred.x - vp.x, ey = pred.y - vp.y
+                    if (Math.sqrt(ex * ex + ey * ey) > mode.outlierThresholdPx) {
+                        ui.status.textContent = 'Outlier detected — keep your gaze on the dot and try again'
+                        dot.style.background = '#f85149'
+                        setTimeout(function () { dot.style.background = '#E77500' }, 400)
+                        return
+                    }
+                }
+
+                // Feed two samples per click for regression stability
+                window.webgazer.recordScreenPosition(vp.x, vp.y, 'click')
+                window.webgazer.recordScreenPosition(vp.x, vp.y, 'click')
+                accepted++
+
+                var remaining = clicks - accepted
+                dot.textContent = remaining > 0 ? String(remaining) : '✓'
+                ui.status.textContent = pt.label + ' — ' + accepted + ' / ' + clicks + ' clicks'
+
+                if (accepted >= clicks) {
+                    dot.classList.add('na-cal-dot--done')
+                    dot.removeEventListener('click', onClick)
+                    await new Promise(function (r) { setTimeout(r, 250) })
+                    dot.remove()
+                    resolvePt()
+                }
+            })
+        })
+    }
+
+    // All pips green — done, go straight to tracking
+    ui.pips.forEach(function (p) { p.style.background = '#3fb950'; p.style.borderColor = '#3fb950' })
+    if (ui.stepEl) ui.stepEl.textContent = 'Complete'
+    ui.status.textContent = '✅ All done! Starting tracking…'
+    await new Promise(function (r) { setTimeout(r, 600) })
+    removeCalibrationOverlay()
+}
+
+// ─── Legacy overlay helpers (used by stop / cleanup) ─────────────────────────
+
 function createCalibrationOverlay(title, subtitle) {
+    // Thin shim so any remaining call-sites don't break.
+    // Full UI is now in createPrincetonOverlay().
     var overlay = document.createElement('div')
     overlay.id = 'na-cal-overlay'
     Object.assign(overlay.style, {
         position: 'fixed',
-        left: '0',
-        top: '0',
-        width: '100vw',
-        height: '100vh',
+        inset: '0',
         zIndex: '2147483647',
         background: 'rgba(8, 10, 16, 0.94)',
         color: '#f0f6fc',
@@ -180,12 +526,8 @@ function createCalibrationOverlay(title, subtitle) {
         '<div style="font-size:12px;color:#9ba7b4;line-height:1.5;">' + subtitle + '</div>',
     ].join('')
     Object.assign(header.style, {
-        position: 'fixed',
-        left: '50%',
-        top: '18px',
-        transform: 'translateX(-50%)',
-        textAlign: 'center',
-        pointerEvents: 'none',
+        position: 'fixed', left: '50%', top: '18px',
+        transform: 'translateX(-50%)', textAlign: 'center', pointerEvents: 'none',
     })
     overlay.appendChild(header)
 
@@ -351,46 +693,28 @@ async function clearWebGazerData() {
     }
 }
 
-async function runCalibrationAndValidation(force) {
+async function runCalibrationAndValidation(_force) {
     if (calibrationPromise) return calibrationPromise
 
     calibrationPromise = (async function () {
         isCalibrating = true
+        await clearWebGazerData()
+        await runPrincetonCalibration()
 
-        var attempt = 0
-        while (attempt <= CONFIG.MAX_FORCED_RECALIBRATION_ATTEMPTS) {
-            attempt += 1
-            await clearWebGazerData()
-            await runCalibrationStage('Stage 1 (Coarse)', CAL_STAGE_1, CONFIG.CALIBRATION_CLICKS_PER_POINT)
-            await runCalibrationStage('Stage 2 (Fine)', CAL_STAGE_2, CONFIG.CALIBRATION_CLICKS_PER_POINT + 1)
-
-            var validation = await runValidationStage(VALIDATION_POINTS)
-            var threshold = getModeConfig().validationThresholdPx || CONFIG.VALIDATION_THRESHOLD_PX
-            console.log('[NeuralAdaptive] Validation result:', validation, 'threshold:', threshold, 'attempt:', attempt)
-
+        // Await the storage write so shouldForceCalibration never races against it
+        await new Promise(function (resolve) {
             chrome.storage.local.set({
-                calibrationVersion: CONFIG.CALIBRATION_VERSION,
-                calibrationMedianErrorPx: Math.round(validation.medianPx),
-                calibrationMeanErrorPx: Math.round(validation.meanPx),
+                calibrationVersion:  CONFIG.CALIBRATION_VERSION,
                 calibrationUpdatedAt: Date.now(),
-            })
+            }, resolve)
+        })
 
-            if (validation.medianPx <= threshold) {
-                isCalibrating = false
-                return validation
-            }
-
-            if (attempt > CONFIG.MAX_FORCED_RECALIBRATION_ATTEMPTS) {
-                throw new Error('Calibration quality too low after retries (median ' + Math.round(validation.medianPx) + 'px)')
-            }
-
-            // Forced recalibration
-            await new Promise(function (r) { setTimeout(r, 300) })
-        }
+        console.log('[NeuralAdaptive] Calibration saved — version', CONFIG.CALIBRATION_VERSION)
+        isCalibrating = false
     })()
 
     try {
-        return await calibrationPromise
+        await calibrationPromise
     } finally {
         calibrationPromise = null
         isCalibrating = false
@@ -400,13 +724,25 @@ async function runCalibrationAndValidation(force) {
 async function shouldForceCalibration(forceRequested) {
     if (forceRequested) return true
     return await new Promise(function (resolve) {
-        chrome.storage.local.get(['calibrationVersion', 'calibrationMedianErrorPx'], function (data) {
+        chrome.storage.local.get(['calibrationVersion'], function (data) {
+            // Only re-calibrate when the calibration schema version changes,
+            // not when accuracy is below threshold — prevents re-entry loops.
             var hasVersion = data && data.calibrationVersion === CONFIG.CALIBRATION_VERSION
-            var error = data && typeof data.calibrationMedianErrorPx === 'number' ? data.calibrationMedianErrorPx : 999
-            var threshold = getModeConfig().validationThresholdPx || CONFIG.VALIDATION_THRESHOLD_PX
-            resolve(!hasVersion || error > threshold)
+            resolve(!hasVersion)
         })
     })
+}
+
+async function preflightCameraAccess() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API unavailable')
+    }
+    var stream = await navigator.mediaDevices.getUserMedia({ video: true })
+    if (stream && stream.getTracks) {
+        stream.getTracks().forEach(function (track) {
+            try { track.stop() } catch (e) { }
+        })
+    }
 }
 
 async function startNeuralAdaptive(options) {
@@ -418,20 +754,28 @@ async function startNeuralAdaptive(options) {
         return
     }
 
+    if (!/^https?:$/i.test(window.location.protocol)) {
+        console.log('[NeuralAdaptive] Skipping tracking on unsupported page:', window.location.href)
+        return
+    }
+
     isBooting = true
     try {
         injectStyles()
+        GazeSmoother.reset()
+        DwellGrid.reset()
+        GazeCursor.create()
 
         if (webgazerInitialized && window.webgazer) {
-            // Already initialized — just resume and re-register listener
-            window.webgazer.setGazeListener(onGaze).showPredictionPoints(true)
+            // Already initialized — resume and re-wire listener; skip model reload
+            window.webgazer
+                .setGazeListener(onGaze)
+                .showPredictionPoints(false)   // cursor replaces the default dot
             try { window.webgazer.resume() } catch (e) { }
             smoothedPoint = null
 
             var needCal = await shouldForceCalibration(!!options.forceRecalibrate)
-            if (needCal) {
-                await runCalibrationAndValidation(!!options.forceRecalibrate)
-            }
+            if (needCal) await runCalibrationAndValidation(!!options.forceRecalibrate)
         } else {
             await ensureWebGazerLoaded()
             if (!window.webgazer || typeof window.webgazer.setGazeListener !== 'function') {
@@ -439,27 +783,42 @@ async function startNeuralAdaptive(options) {
             }
 
             window.webgazer
-                .saveDataAcrossSessions(false)
+                .saveDataAcrossSessions(true)
                 .setGazeListener(onGaze)
                 .setTracker('TFFacemesh')
                 .setRegression('ridge')
                 .showVideoPreview(false)
-                .showPredictionPoints(true)
+                .showPredictionPoints(false)   // cursor replaces the default dot
 
+            try {
+                if (navigator.permissions && navigator.permissions.query) {
+                    var camPerm = await navigator.permissions.query({ name: 'camera' })
+                    if (camPerm && camPerm.state === 'denied') {
+                        throw new Error('Camera permission denied')
+                    }
+                }
+            } catch (permErr) {
+                // If permissions API is unavailable, continue and let begin() decide.
+            }
+
+            await preflightCameraAccess()
             await window.webgazer.begin()
             webgazerInitialized = true
             smoothedPoint = null
 
             var needCal = await shouldForceCalibration(!!options.forceRecalibrate)
-            if (needCal) {
-                await runCalibrationAndValidation(!!options.forceRecalibrate)
-            }
+            if (needCal) await runCalibrationAndValidation(!!options.forceRecalibrate)
         }
 
         isRunning = true
         console.log('[NeuralAdaptive] Tracking enabled')
     } catch (err) {
-        console.error('[NeuralAdaptive] Failed to start tracking:', err && err.message ? err.message : err)
+        var msg = err && err.message ? err.message : String(err)
+        console.error('[NeuralAdaptive] Failed to start tracking:', msg)
+        if (/permission dismissed|notallowed|camera permission denied/i.test(msg)) {
+            console.error('[NeuralAdaptive] Camera permission is blocked/dismissed. Allow camera and try again.')
+            chrome.storage.local.set({ enabled: false }, function () { })
+        }
         isRunning = false
     } finally {
         isBooting = false
@@ -472,11 +831,17 @@ function stopNeuralAdaptive() {
         try { window.webgazer.showPredictionPoints(false) } catch (e) { }
         try { window.webgazer.pause() } catch (e) { }
     }
+
+    GazeSmoother.reset()
+    DwellGrid.reset()
+    GazeCursor.hide()
+
     isRunning = false
     isBooting = false
     isCalibrating = false
     gazeBuffer = []
     lastSendTime = 0
+    lastDwellBoost = 0
     currentTier = 'CALM'
     smoothedPoint = null
     clearAllInterventions()
@@ -496,28 +861,48 @@ function clearAllInterventions() {
     })
 }
 
+// Dwell callback — fires when gaze stays in one grid sector for DWELL_THRESHOLD_MS
+DwellGrid.onDwellCb = function (sector, x, y) {
+    if (!isRunning || isCalibrating) return
+    var para = DwellGrid.getParagraphAt(x, y)
+    console.log('[NeuralAdaptive] Dwell sector', sector, para ? 'on <' + para.tagName + '>' : '(no para)')
+    // Dwell on a paragraph counts as a heavy fixation signal — boost the next score flush
+    if (para) lastDwellBoost = Date.now()
+}
+
+var lastDwellBoost = 0   // timestamp of most recent dwell event
+
 function onGaze(data) {
     if (!data || !isRunning || isCalibrating) return
 
-    var mode = getModeConfig()
-    var alpha = mode.alpha
-    if (!smoothedPoint) {
-        smoothedPoint = { x: data.x, y: data.y }
-    } else {
-        smoothedPoint.x = smoothedPoint.x + alpha * (data.x - smoothedPoint.x)
-        smoothedPoint.y = smoothedPoint.y + alpha * (data.y - smoothedPoint.y)
-    }
+    // ── 1. Smooth raw coordinates (α = 0.15 low-pass filter) ──────────────
+    var smooth = GazeSmoother.update(data.x, data.y)
+    smoothedPoint = smooth                  // keep legacy alias in sync
 
-    var point = { x: smoothedPoint.x, y: smoothedPoint.y, t: Date.now() }
+    // ── 2. Move the Princeton-orange cursor ring ───────────────────────────
+    GazeCursor.move(smooth.x, smooth.y)
+
+    // ── 3. Spatial binning — sector dwell detection ────────────────────────
+    DwellGrid.update(smooth.x, smooth.y)
+
+    // ── 4. Push to signal buffer ───────────────────────────────────────────
+    var point = { x: smooth.x, y: smooth.y, t: Date.now() }
     gazeBuffer.push(point)
     if (gazeBuffer.length > CONFIG.SAMPLE_BUFFER_SIZE) gazeBuffer.shift()
 
+    // ── 5. Throttled stress scoring ────────────────────────────────────────
     var now = Date.now()
     if (now - lastSendTime < CONFIG.SEND_INTERVAL_MS) return
     lastSendTime = now
     if (gazeBuffer.length < 10) return
 
     var signals = computeSignals(gazeBuffer)
+
+    // Dwell boost: if a sector dwell fired recently, inflate fixation signal
+    if (now - lastDwellBoost < CONFIG.SEND_INTERVAL_MS * 1.5) {
+        signals.fixation = Math.min(signals.fixation + 0.25, 1.0)
+    }
+
     var score = (signals.fixation * 0.45) + (signals.saccade * 0.35) + (signals.regression * 0.20)
     score = parseFloat(Math.min(Math.max(score, 0), 1.0).toFixed(3))
     var tier = score < 0.3 ? 'CALM' : score < 0.6 ? 'ELEVATED' : 'OVERLOAD'

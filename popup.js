@@ -31,10 +31,19 @@ function queryActiveTab(callback) {
     })
 }
 
+function isInjectableTab(tab) {
+    if (!tab || !tab.url) return false
+    return /^https?:\/\//i.test(tab.url)
+}
+
 function sendToActiveTab(message, callback) {
     queryActiveTab(function (tab) {
         if (!tab || !tab.id) {
             callback(false, 'No active tab')
+            return
+        }
+        if (!isInjectableTab(tab)) {
+            callback(false, 'Unsupported page. Open a normal http(s) webpage.')
             return
         }
         chrome.tabs.sendMessage(tab.id, message, function (response) {
@@ -62,11 +71,11 @@ toggleBtn.addEventListener('click', function () {
         var nextEnabled = !(data && data.enabled)
         chrome.storage.local.set({ enabled: nextEnabled }, function () {
             renderEnabled(nextEnabled)
-            if (nextEnabled) {
-                sendToActiveTab({ type: 'NA_SET_ENABLED', enabled: true }, function () { })
-            } else {
-                sendToActiveTab({ type: 'NA_SET_ENABLED', enabled: false }, function () { })
-            }
+            sendToActiveTab({ type: 'NA_SET_ENABLED', enabled: nextEnabled }, function (ok, info) {
+                if (!ok && nextEnabled) {
+                    statusText.textContent = 'Enabled globally. Open a normal website to start.'
+                }
+            })
         })
     })
 })
@@ -84,7 +93,7 @@ recalibrateBtn.addEventListener('click', function () {
     sendToActiveTab({ type: 'NA_RECALIBRATE' }, function (ok, response) {
         recalibrateBtn.disabled = false
         if (!ok) {
-            statusText.textContent = 'Recalibration failed: open a normal webpage and try again.'
+            statusText.textContent = 'Recalibration requires an http(s) page with tracking enabled.'
             return
         }
         statusText.textContent = 'Recalibration completed.'

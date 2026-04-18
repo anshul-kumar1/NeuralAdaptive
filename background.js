@@ -13,8 +13,18 @@ chrome.runtime.onInstalled.addListener(function () {
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
     if (message.type === 'INJECT_WEBGAZER') {
+        var tabId = sender && sender.tab ? sender.tab.id : null
+        var tabUrl = sender && sender.tab ? sender.tab.url || '' : ''
+        if (!tabId) {
+            sendResponse({ ok: false, error: 'No sender tab' })
+            return false
+        }
+        if (!/^https?:\/\//i.test(tabUrl)) {
+            sendResponse({ ok: false, error: 'Cannot inject on non-http(s) page: ' + tabUrl })
+            return false
+        }
         chrome.scripting.executeScript({
-            target: { tabId: sender.tab.id },
+            target: { tabId: tabId },
             files: ['webgazer.js'],
             world: 'ISOLATED'
         }).then(function () {
