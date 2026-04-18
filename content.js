@@ -1,0 +1,1 @@
+DOM manipulation on each page

@@ -1,0 +1,1 @@
+Webcam + MediaPipe, stress score
