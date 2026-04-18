@@ -1,1 +1,91 @@
 Shell page for offsscreen doc
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <!--
+    offscreen.html — The hidden document that runs MediaPipe Pose.
+
+    This page is NEVER visible to the user. Chrome creates it in the background
+    purely so we have a document context that can:
+      1. Call getUserMedia() to access the webcam
+      2. Run MediaPipe's WASM-based pose estimation
+      3. Send stress scores back to background.js via chrome.runtime.sendMessage
+
+    Why a separate document and not just background.js?
+    Service workers (background.js) cannot access the camera — they have no
+    window, no navigator.mediaDevices, no DOM. An offscreen document gives us
+    all of that while still being invisible to the user.
+
+    PHASE 1 NOTE:
+    MediaPipe WASM files are not yet bundled in /lib — we're loading from CDN
+    for scaffolding. Before the hackathon demo, download the WASM files locally
+    and point locateFile at chrome.runtime.getURL('lib/...').
+    See offscreen.js comments for instructions.
+  -->
+    <title>NeuralAdaptive — Offscreen</title>
+</head>
+
+<body>
+
+    <!--
+    Hidden video element — the webcam stream is piped here.
+    MediaPipe reads frames from this element.
+    autoplay: required or the stream never plays
+    muted:    required for autoplay to work without user gesture
+    playsinline: prevents iOS fullscreen hijacking (good habit even on desktop)
+    style:    truly hidden — not just invisible, but zero-size so it
+              doesn't affect the offscreen document's layout
+  -->
+    <video id="webcam-feed" autoplay muted playsinline
+        style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;"></video>
+
+    <!--
+    Canvas element — MediaPipe's Camera utility needs this to draw frames
+    before passing them to the Pose solution. Also useful for debugging:
+    temporarily set width/height and opacity:1 to see what MediaPipe sees.
+  -->
+    <canvas id="pose-canvas" width="640" height="480"
+        style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;"></canvas>
+
+    <!--
+    Status div — only visible during development.
+    Shows camera state and last stress score so you can verify the pipeline
+    is working without opening DevTools.
+    Remove or hide this before the final demo.
+  -->
+    <div id="debug-status" style="
+    font-family: monospace;
+    font-size: 12px;
+    padding: 8px;
+    background: #111;
+    color: #0f0;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%;
+    z-index: 9999;
+  ">
+        [NeuralAdaptive offscreen] Waiting for START_CAMERA...
+    </div>
+
+    <!--
+    MediaPipe Pose — loaded from CDN for Phase 1 scaffolding.
+    ⚠️  BEFORE DEMO: Replace these with local /lib files.
+    Steps:
+      1. npm install @mediapipe/pose @mediapipe/camera_utils
+      2. Copy node_modules/@mediapipe/pose/* to your /lib folder
+      3. Replace these script tags with:
+           <script src="lib/pose.js"></script>
+           <script src="lib/camera_utils.js"></script>
+      4. In offscreen.js, set locateFile: (f) => chrome.runtime.getURL(`lib/${f}`)
+  -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <!-- Main logic — loaded last so the DOM and MediaPipe scripts are ready -->
+    <script src="offscreen.js"></script>
+
+</body>
+
+</html>

@@ -1,1 +1,138 @@
-Live Stress meter UI
+<!--Live Stress meter UI-->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>NeuralAdaptive</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            padding: 16px;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            font-size: 13px;
+        }
+
+        h2 {
+            font-size: 15px;
+            font-weight: 500;
+            margin: 0 0 12px;
+            color: #fff;
+        }
+
+        #status {
+            color: #6a8fc4;
+            margin-bottom: 16px;
+        }
+
+        #score-display {
+            font-size: 48px;
+            font-weight: 300;
+            color: #4ade80;
+            margin: 8px 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        #tier-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            background: #1a2a1a;
+            color: #4ade80;
+            margin-bottom: 16px;
+        }
+
+        button {
+            width: 100%;
+            padding: 8px;
+            background: #1e1e2e;
+            border: 1px solid #333;
+            color: #ccc;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+
+        button:hover {
+            background: #2a2a3e;
+        }
+
+        .signals {
+            font-size: 11px;
+            color: #666;
+            margin-top: 12px;
+            line-height: 1.8;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>NeuralAdaptive</h2>
+    <div id="status">Waiting for camera...</div>
+    <div id="score-display">—</div>
+    <div id="tier-badge">NO DATA</div>
+    <div class="signals" id="signals"></div>
+    <button id="calibrate-btn">Calibrate Baseline</button>
+
+    <script>
+        const scoreEl = document.getElementById('score-display')
+        const tierEl = document.getElementById('tier-badge')
+        const statusEl = document.getElementById('status')
+        const signalsEl = document.getElementById('signals')
+        const calBtn = document.getElementById('calibrate-btn')
+
+        const tierColors = {
+            CALM: { bg: '#1a2a1a', color: '#4ade80' },
+            ELEVATED: { bg: '#2a2a0a', color: '#facc15' },
+            OVERLOAD: { bg: '#2a0a0a', color: '#f87171' },
+        }
+
+        // Poll chrome.storage.local every second for the latest score
+        // (Side panel can't receive messages directly from background in MV3 easily)
+        setInterval(async () => {
+            const data = await chrome.storage.local.get(['currentScore', 'currentTier', 'signals', 'lastUpdated'])
+            if (!data.currentScore && data.currentScore !== 0) return
+
+            const age = Date.now() - (data.lastUpdated || 0)
+            statusEl.textContent = age < 5000 ? 'Live' : `Last update ${Math.round(age / 1000)}s ago`
+
+            scoreEl.textContent = data.currentScore.toFixed(2)
+
+            const tier = data.currentTier || 'CALM'
+            tierEl.textContent = tier
+            const colors = tierColors[tier] || tierColors.CALM
+            tierEl.style.background = colors.bg
+            tierEl.style.color = colors.color
+            scoreEl.style.color = colors.color
+
+            if (data.signals) {
+                signalsEl.innerHTML = `
+          slump: ${data.signals.slump}<br>
+          lean-in: ${data.signals.leanIn}<br>
+          fixation: ${data.signals.fixation}
+        `
+            }
+        }, 1000)
+
+        calBtn.addEventListener('click', () => {
+            calBtn.textContent = 'Calibrating in 3...'
+            let count = 3
+            const interval = setInterval(() => {
+                count--
+                if (count > 0) {
+                    calBtn.textContent = `Calibrating in ${count}...`
+                } else {
+                    clearInterval(interval)
+                    chrome.runtime.sendMessage({ type: 'SET_BASELINE' })
+                    calBtn.textContent = 'Calibrate Baseline'
+                }
+            }, 1000)
+        })
+    </script>
+</body>
+
+</html>
