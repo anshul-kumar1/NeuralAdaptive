@@ -1,11 +1,14 @@
+console.log('[WebGazer] script START');
 /*!
- * 
+ *
  *  WebGazer.js: Scalable Webcam EyeTracking Using User Interactions
  *  Copyright (c) 2016-2021, Brown HCI Group 
  *  Licensed under GPLv3. Companies with a valuation of less than $1M can use WebGazer.js under LGPLv3.
  *  
  */
-var webgazer =
+var webgazer;
+try {
+webgazer =
 /******/ (function(modules) { // webpackBootstrap
 /******/ 	// The module cache
 /******/ 	var installedModules = {};
@@ -3104,14 +3107,14 @@ function fromPixels_(pixels, numChannels = 3) {
     if (isCanvasLike) {
         vals =
             // tslint:disable-next-line:no-any
-            pixels.getContext('2d').getImageData(0, 0, width, height).data;
+            pixels.getContext('2d',{willReadFrequently:true}).getImageData(0, 0, width, height).data;
     }
     else if (isImageData || isPixelData) {
         vals = pixels.data;
     }
     else if (isImage || isVideo || isImageBitmap) {
         if (fromPixels2DContext == null) {
-            fromPixels2DContext = document.createElement('canvas').getContext('2d');
+            fromPixels2DContext = document.createElement('canvas').getContext('2d',{willReadFrequently:true});
         }
         fromPixels2DContext.canvas.width = width;
         fromPixels2DContext.canvas.height = height;
@@ -3293,7 +3296,7 @@ async function toPixels(img, canvas) {
     if (canvas != null) {
         canvas.width = width;
         canvas.height = height;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d',{willReadFrequently:true});
         const imageData = new ImageData(bytes, width, height);
         ctx.putImageData(imageData, 0, 0);
     }
@@ -51645,7 +51648,7 @@ const tf = __webpack_require__(0);
 const keypoints_1 = __webpack_require__(297);
 const pipeline_1 = __webpack_require__(298);
 const uv_coords_1 = __webpack_require__(300);
-const FACEMESH_GRAPHMODEL_PATH = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL('models/facemesh/model.json') : 'https://tfhub.dev/mediapipe/tfjs-model/facemesh/1/default/1';
+const FACEMESH_GRAPHMODEL_PATH = null; // resolved lazily in loadMeshModel
 const MESH_MODEL_INPUT_WIDTH = 192;
 const MESH_MODEL_INPUT_HEIGHT = 192;
 async function load({ maxContinuousChecks = 5, detectionConfidence = 0.9, maxFaces = 10, iouThreshold = 0.3, scoreThreshold = 0.75 } = {}) {
@@ -51660,7 +51663,10 @@ async function loadDetectorModel(maxFaces, iouThreshold, scoreThreshold) {
     return blazeface.load({ maxFaces, iouThreshold, scoreThreshold });
 }
 async function loadMeshModel() {
-    return tfconv.loadGraphModel(FACEMESH_GRAPHMODEL_PATH, { fromTFHub: FACEMESH_GRAPHMODEL_PATH.startsWith('https://tfhub.dev') });
+    var meshPath = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+        ? chrome.runtime.getURL('models/facemesh/model.json')
+        : 'https://tfhub.dev/mediapipe/tfjs-model/facemesh/1/default/1';
+    return tfconv.loadGraphModel(meshPath, { fromTFHub: meshPath.startsWith('https://tfhub.dev') });
 }
 function getInputTensorDimensions(input) {
     return input instanceof tf.Tensor ? [input.shape[0], input.shape[1]] :
@@ -79220,7 +79226,7 @@ __webpack_require__.r(__webpack_exports__);
     * limitations under the License.
     * =============================================================================
     */
-const disposeBox=t=>{t.startEndTensor.dispose(),t.startPoint.dispose(),t.endPoint.dispose()},createBox=t=>({startEndTensor:t,startPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,0],[-1,2]),endPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,2],[-1,2])}),scaleBox=(t,o)=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.startPoint,o),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.endPoint,o),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([s,e],1);return createBox(i)},ANCHORS_CONFIG={strides:[8,16],anchors:[2,6]},NUM_LANDMARKS=6;function generateAnchors(t,o,s){const e=[];for(let i=0;i<s.strides.length;i++){const n=s.strides[i],a=Math.floor((o+n-1)/n),r=Math.floor((t+n-1)/n),c=s.anchors[i];for(let t=0;t<a;t++){const o=n*(t+.5);for(let t=0;t<r;t++){const s=n*(t+.5);for(let t=0;t<c;t++)e.push([s,o])}}}return e}function decodeBounds(t,o,s){const e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,1],[-1,2]),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(e,o),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,3],[-1,2]),a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(n,s),r=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(i,s),c=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(a,2),l=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(r,c),d=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(r,c),h=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(l,s),p=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(d,s);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([h,p],1)}function getInputTensorDimensions(t){return t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?[t.shape[0],t.shape[1]]:[t.height,t.width]}function flipFaceHorizontal(t,o){let s,e,i;if(t.topLeft instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]&&t.bottomRight instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]){const[n,a]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>[Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.topLeft.slice(0,1)),t.topLeft.slice(1,1)]),Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.bottomRight.slice(0,1)),t.bottomRight.slice(1,1)])]);s=n,e=a,null!=t.landmarks&&(i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o-1,0]),t.landmarks),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([1,-1]);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(s,e)}))}else{const[n,a]=t.topLeft,[r,c]=t.bottomRight;s=[o-1-n,a],e=[o-1-r,c],null!=t.landmarks&&(i=t.landmarks.map(t=>[o-1-t[0],t[1]]))}const n={topLeft:s,bottomRight:e};return null!=i&&(n.landmarks=i),null!=t.probability&&(n.probability=t.probability instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?t.probability.clone():t.probability),n}function scaleBoxFromPrediction(t,o){return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{let s;return s=t.hasOwnProperty("box")?t.box:t,scaleBox(s,o).startEndTensor.squeeze()})}class BlazeFaceModel{constructor(t,o,s,e,i,n){this.blazeFaceModel=t,this.width=o,this.height=s,this.maxFaces=e,this.anchorsData=generateAnchors(o,s,ANCHORS_CONFIG),this.anchors=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(this.anchorsData),this.inputSizeData=[o,s],this.inputSize=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o,s]),this.iouThreshold=i,this.scoreThreshold=n}async getBoundingBoxes(t,o,s=!0){const[e,i,n]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const o=t.resizeBilinear([this.width,this.height]),s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o.div(255),.5),2),e=this.blazeFaceModel.predict(s).squeeze(),i=decodeBounds(e,this.anchors,this.inputSize),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[0,0],[-1,1]);return[e,i,Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sigmoid"])(n).squeeze()]}),a=console.warn;console.warn=(()=>{});const r=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["image"].nonMaxSuppression(i,n,this.maxFaces,this.iouThreshold,this.scoreThreshold);console.warn=a;const c=await r.array();r.dispose();let l=c.map(t=>Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(i,[t,0],[1,-1]));o||(l=await Promise.all(l.map(async t=>{const o=await t.array();return t.dispose(),o})));const d=t.shape[1],h=t.shape[2];let p;p=o?Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])([h,d],this.inputSize):[h/this.inputSizeData[0],d/this.inputSizeData[1]];const u=[];for(let t=0;t<l.length;t++){const i=l[t],a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const a=createBox(i instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?i:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(i));if(!s)return a;const r=c[t];let l;return l=o?this.anchors.slice([r,0],[1,2]):this.anchorsData[r],{box:a,landmarks:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[r,NUM_LANDMARKS-1],[1,-1]).squeeze().reshape([NUM_LANDMARKS,-1]),probability:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(n,[r],[1]),anchor:l}});u.push(a)}return i.dispose(),n.dispose(),e.dispose(),{boxes:u,scaleFactor:p}}async estimateFaces(t,o=!1,s=!1,e=!0){const[,i]=getInputTensorDimensions(t),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>(t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]||(t=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["browser"].fromPixels(t)),t.toFloat().expandDims(0))),{boxes:a,scaleFactor:r}=await this.getBoundingBoxes(n,o,e);return n.dispose(),o?a.map(t=>{const o=scaleBoxFromPrediction(t,r);let n={topLeft:o.slice([0],[2]),bottomRight:o.slice([2],[2])};if(e){const{landmarks:o,probability:s,anchor:e}=t,i=o.add(e).mul(r);n.landmarks=i,n.probability=s}return s&&(n=flipFaceHorizontal(n,i)),n}):Promise.all(a.map(async t=>{const o=scaleBoxFromPrediction(t,r);let n;if(e){const[s,e,i]=await Promise.all([t.landmarks,o,t.probability].map(async t=>t.array())),a=t.anchor,[c,l]=r,d=s.map(t=>[(t[0]+a[0])*c,(t[1]+a[1])*l]);n={topLeft:e.slice(0,2),bottomRight:e.slice(2),landmarks:d,probability:i},disposeBox(t.box),t.landmarks.dispose(),t.probability.dispose()}else{const t=await o.array();n={topLeft:t.slice(0,2),bottomRight:t.slice(2)}}return o.dispose(),s&&(n=flipFaceHorizontal(n,i)),n}))}}const BLAZEFACE_MODEL_URL=(typeof chrome!=='undefined'&&chrome.runtime&&chrome.runtime.getURL)?chrome.runtime.getURL('models/blazeface/model.json'):'https://tfhub.dev/tensorflow/tfjs-model/blazeface/1/default/1';async function load({maxFaces:t=10,inputWidth:o=128,inputHeight:s=128,iouThreshold:e=.3,scoreThreshold:i=.75}={}){const n=await Object(_tensorflow_tfjs_converter__WEBPACK_IMPORTED_MODULE_1__["loadGraphModel"])(BLAZEFACE_MODEL_URL,{fromTFHub:BLAZEFACE_MODEL_URL.startsWith('https://tfhub.dev')});return new BlazeFaceModel(n,o,s,t,e,i)}
+const disposeBox=t=>{t.startEndTensor.dispose(),t.startPoint.dispose(),t.endPoint.dispose()},createBox=t=>({startEndTensor:t,startPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,0],[-1,2]),endPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,2],[-1,2])}),scaleBox=(t,o)=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.startPoint,o),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.endPoint,o),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([s,e],1);return createBox(i)},ANCHORS_CONFIG={strides:[8,16],anchors:[2,6]},NUM_LANDMARKS=6;function generateAnchors(t,o,s){const e=[];for(let i=0;i<s.strides.length;i++){const n=s.strides[i],a=Math.floor((o+n-1)/n),r=Math.floor((t+n-1)/n),c=s.anchors[i];for(let t=0;t<a;t++){const o=n*(t+.5);for(let t=0;t<r;t++){const s=n*(t+.5);for(let t=0;t<c;t++)e.push([s,o])}}}return e}function decodeBounds(t,o,s){const e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,1],[-1,2]),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(e,o),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,3],[-1,2]),a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(n,s),r=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(i,s),c=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(a,2),l=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(r,c),d=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(r,c),h=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(l,s),p=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(d,s);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([h,p],1)}function getInputTensorDimensions(t){return t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?[t.shape[0],t.shape[1]]:[t.height,t.width]}function flipFaceHorizontal(t,o){let s,e,i;if(t.topLeft instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]&&t.bottomRight instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]){const[n,a]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>[Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.topLeft.slice(0,1)),t.topLeft.slice(1,1)]),Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.bottomRight.slice(0,1)),t.bottomRight.slice(1,1)])]);s=n,e=a,null!=t.landmarks&&(i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o-1,0]),t.landmarks),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([1,-1]);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(s,e)}))}else{const[n,a]=t.topLeft,[r,c]=t.bottomRight;s=[o-1-n,a],e=[o-1-r,c],null!=t.landmarks&&(i=t.landmarks.map(t=>[o-1-t[0],t[1]]))}const n={topLeft:s,bottomRight:e};return null!=i&&(n.landmarks=i),null!=t.probability&&(n.probability=t.probability instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?t.probability.clone():t.probability),n}function scaleBoxFromPrediction(t,o){return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{let s;return s=t.hasOwnProperty("box")?t.box:t,scaleBox(s,o).startEndTensor.squeeze()})}class BlazeFaceModel{constructor(t,o,s,e,i,n){this.blazeFaceModel=t,this.width=o,this.height=s,this.maxFaces=e,this.anchorsData=generateAnchors(o,s,ANCHORS_CONFIG),this.anchors=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(this.anchorsData),this.inputSizeData=[o,s],this.inputSize=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o,s]),this.iouThreshold=i,this.scoreThreshold=n}async getBoundingBoxes(t,o,s=!0){const[e,i,n]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const o=t.resizeBilinear([this.width,this.height]),s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o.div(255),.5),2),e=this.blazeFaceModel.predict(s).squeeze(),i=decodeBounds(e,this.anchors,this.inputSize),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[0,0],[-1,1]);return[e,i,Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sigmoid"])(n).squeeze()]}),a=console.warn;console.warn=(()=>{});const r=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["image"].nonMaxSuppression(i,n,this.maxFaces,this.iouThreshold,this.scoreThreshold);console.warn=a;const c=await r.array();r.dispose();let l=c.map(t=>Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(i,[t,0],[1,-1]));o||(l=await Promise.all(l.map(async t=>{const o=await t.array();return t.dispose(),o})));const d=t.shape[1],h=t.shape[2];let p;p=o?Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])([h,d],this.inputSize):[h/this.inputSizeData[0],d/this.inputSizeData[1]];const u=[];for(let t=0;t<l.length;t++){const i=l[t],a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const a=createBox(i instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?i:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(i));if(!s)return a;const r=c[t];let l;return l=o?this.anchors.slice([r,0],[1,2]):this.anchorsData[r],{box:a,landmarks:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[r,NUM_LANDMARKS-1],[1,-1]).squeeze().reshape([NUM_LANDMARKS,-1]),probability:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(n,[r],[1]),anchor:l}});u.push(a)}return i.dispose(),n.dispose(),e.dispose(),{boxes:u,scaleFactor:p}}async estimateFaces(t,o=!1,s=!1,e=!0){const[,i]=getInputTensorDimensions(t),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>(t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]||(t=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["browser"].fromPixels(t)),t.toFloat().expandDims(0))),{boxes:a,scaleFactor:r}=await this.getBoundingBoxes(n,o,e);return n.dispose(),o?a.map(t=>{const o=scaleBoxFromPrediction(t,r);let n={topLeft:o.slice([0],[2]),bottomRight:o.slice([2],[2])};if(e){const{landmarks:o,probability:s,anchor:e}=t,i=o.add(e).mul(r);n.landmarks=i,n.probability=s}return s&&(n=flipFaceHorizontal(n,i)),n}):Promise.all(a.map(async t=>{const o=scaleBoxFromPrediction(t,r);let n;if(e){const[s,e,i]=await Promise.all([t.landmarks,o,t.probability].map(async t=>t.array())),a=t.anchor,[c,l]=r,d=s.map(t=>[(t[0]+a[0])*c,(t[1]+a[1])*l]);n={topLeft:e.slice(0,2),bottomRight:e.slice(2),landmarks:d,probability:i},disposeBox(t.box),t.landmarks.dispose(),t.probability.dispose()}else{const t=await o.array();n={topLeft:t.slice(0,2),bottomRight:t.slice(2)}}return o.dispose(),s&&(n=flipFaceHorizontal(n,i)),n}))}}async function load({maxFaces:t=10,inputWidth:o=128,inputHeight:s=128,iouThreshold:e=.3,scoreThreshold:i=.75}={}){const BLAZEFACE_MODEL_URL=(typeof chrome!=='undefined'&&chrome.runtime&&chrome.runtime.getURL)?chrome.runtime.getURL('models/blazeface/model.json'):'https://tfhub.dev/tensorflow/tfjs-model/blazeface/1/default/1';const n=await Object(_tensorflow_tfjs_converter__WEBPACK_IMPORTED_MODULE_1__["loadGraphModel"])(BLAZEFACE_MODEL_URL,{fromTFHub:BLAZEFACE_MODEL_URL.startsWith('https://tfhub.dev')});return new BlazeFaceModel(n,o,s,t,e,i)}
 
 
 /***/ }),
@@ -121373,7 +121379,7 @@ function fromPixels(args) {
     const outShape = [height, width, numChannels];
     if (isImage || isVideo) {
         if (fromPixels2DContext == null) {
-            fromPixels2DContext = document.createElement('canvas').getContext('2d');
+            fromPixels2DContext = document.createElement('canvas').getContext('2d',{willReadFrequently:true});
         }
         fromPixels2DContext.canvas.width = width;
         fromPixels2DContext.canvas.height = height;
@@ -137890,7 +137896,7 @@ TFFaceMesh.prototype.getEyePatches = async function(imageCanvas, width, height) 
   // Start building object to be returned
   var eyeObjs = {};
 
-  var leftImageData = imageCanvas.getContext('2d').getImageData(leftOriginX, leftOriginY, leftWidth, leftHeight);
+  var leftImageData = imageCanvas.getContext('2d',{willReadFrequently:true}).getImageData(leftOriginX, leftOriginY, leftWidth, leftHeight);
   eyeObjs.left = {
     patch: leftImageData,
     imagex: leftOriginX,
@@ -137899,7 +137905,7 @@ TFFaceMesh.prototype.getEyePatches = async function(imageCanvas, width, height) 
     height: leftHeight
   };
 
-  var rightImageData = imageCanvas.getContext('2d').getImageData(rightOriginX, rightOriginY, rightWidth, rightHeight);
+  var rightImageData = imageCanvas.getContext('2d',{willReadFrequently:true}).getImageData(rightOriginX, rightOriginY, rightWidth, rightHeight);
   eyeObjs.right = {
     patch: rightImageData,
     imagex: rightOriginX,
@@ -138493,7 +138499,7 @@ util.resizeEye = function(eye, resizeWidth, resizeHeight) {
     canvas.width = eye.width;
     canvas.height = eye.height;
 
-    canvas.getContext('2d').putImageData(eye.patch,0,0);
+    canvas.getContext('2d',{willReadFrequently:true}).putImageData(eye.patch,0,0);
 
     var tempCanvas = document.createElement('canvas');
 
@@ -138501,9 +138507,9 @@ util.resizeEye = function(eye, resizeWidth, resizeHeight) {
     tempCanvas.height = resizeHeight;
 
     // save the canvas into temp canvas
-    tempCanvas.getContext('2d').drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, resizeWidth, resizeHeight);
+    tempCanvas.getContext('2d',{willReadFrequently:true}).drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, resizeWidth, resizeHeight);
 
-    return tempCanvas.getContext('2d').getImageData(0, 0, resizeWidth, resizeHeight);
+    return tempCanvas.getContext('2d',{willReadFrequently:true}).getImageData(0, 0, resizeWidth, resizeHeight);
 };
 
 /**
@@ -138622,7 +138628,7 @@ util.DebugBox.prototype.show = function(name, func) {
         this.div.appendChild(this.canvas[name]);
     }
     var canvas = this.canvas[name];
-    canvas.getContext('2d').clearRect(0,0, canvas.width, canvas.height);
+    canvas.getContext('2d',{willReadFrequently:true}).clearRect(0,0, canvas.width, canvas.height);
     func(canvas);
 };
 
@@ -139449,7 +139455,7 @@ function checkEyesInValidationBox() {
  * @param {y} y - The y co-ordinate of the desired point to plot
  */
 function drawCoordinates(colour,x,y){
-  var ctx = document.getElementById("plotting_canvas").getContext('2d');
+  var ctx = document.getElementById("plotting_canvas").getContext('2d',{willReadFrequently:true});
   ctx.fillStyle = colour; // Red color
   ctx.beginPath();
   ctx.arc(x, y, 5, 0, Math.PI * 2, true);
@@ -139489,7 +139495,7 @@ function paintCurrentFrame(canvas, width, height) {
     canvas.height = height;
   }
 
-  var ctx = canvas.getContext('2d');
+  var ctx = canvas.getContext('2d',{willReadFrequently:true});
   ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
 }
 
@@ -139554,8 +139560,8 @@ async function loop() {
     {
       // Get tracker object
       var tracker = src_webgazer.getTracker();
-      faceOverlay.getContext('2d').clearRect( 0, 0, videoElement.videoWidth, videoElement.videoHeight);
-      tracker.drawFaceOverlay(faceOverlay.getContext('2d'), tracker.getPositions());
+      faceOverlay.getContext('2d',{willReadFrequently:true}).clearRect( 0, 0, videoElement.videoWidth, videoElement.videoHeight);
+      tracker.drawFaceOverlay(faceOverlay.getContext('2d',{willReadFrequently:true}), tracker.getPositions());
     }
 
     // Feedback box
@@ -140430,4 +140436,12 @@ src_webgazer.getStoredPoints = function() {
 
 /***/ })
 /******/ ])["default"];
+// Explicitly expose on window for content-script consumption
+} catch (e) {
+  console.error('[WebGazer] INIT CRASH:', e && e.message, e && e.stack);
+}
+if (typeof window !== 'undefined') {
+  window.webgazer = webgazer;
+  console.log('[WebGazer] window.webgazer set, begin=' + (typeof (webgazer && webgazer.begin)));
+}
 //# sourceMappingURL=webgazer.js.map

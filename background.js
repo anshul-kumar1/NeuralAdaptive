@@ -1,10 +1,30 @@
-﻿// background.js
-// Much simpler now. No offscreen document needed.
-// WebGazer runs inside content.js on the reading page.
-// This file just routes summarization requests to Gemini.
-console.log('[NeuralAdaptive v2.0.13] background service worker loaded')
+// background.js
+console.log('[NeuralAdaptive v2.2.0] background service worker loaded')
+
+chrome.runtime.onInstalled.addListener(function () {
+    chrome.storage.local.get(['enabled', 'accuracyMode'], function (data) {
+        var patch = {}
+        if (typeof data.enabled === 'undefined') patch.enabled = false
+        if (typeof data.accuracyMode === 'undefined') patch.accuracyMode = 'balanced'
+        if (Object.keys(patch).length > 0) chrome.storage.local.set(patch)
+    })
+})
 
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+
+    if (message.type === 'INJECT_WEBGAZER') {
+        chrome.scripting.executeScript({
+            target: { tabId: sender.tab.id },
+            files: ['webgazer.js'],
+            world: 'ISOLATED'
+        }).then(function () {
+            sendResponse({ ok: true })
+        }).catch(function (err) {
+            console.error('[NeuralAdaptive] webgazer inject failed:', err)
+            sendResponse({ ok: false, error: err.message })
+        })
+        return true
+    }
 
     if (message.type === 'SUMMARIZE_PARAGRAPH') {
         callGemini(message.text).then(function (summary) {

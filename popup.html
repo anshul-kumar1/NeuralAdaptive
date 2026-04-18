@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NeuralAdaptive</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+
+<body>
+  <main class="panel">
+    <h1>NeuralAdaptive</h1>
+    <p class="sub">Eye-tracking assist</p>
+
+    <button id="toggleBtn" class="toggle" type="button" aria-pressed="false">
+      Loading...
+    </button>
+
+    <button id="recalibrateBtn" class="recalibrate" type="button">
+      Recalibrate
+    </button>
+
+    <label for="modeSelect" class="label">Accuracy mode</label>
+    <select id="modeSelect" class="select">
+      <option value="balanced">Balanced</option>
+      <option value="precision">Precision</option>
+    </select>
+
+    <p id="statusText" class="status">Checking state...</p>
+    <p id="calibrationText" class="calibration">Calibration: unknown</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+
+</html>
