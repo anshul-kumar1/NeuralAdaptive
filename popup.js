@@ -1,4 +1,5 @@
 var toggleBtn = document.getElementById('toggleBtn')
+var progressBarBtn = document.getElementById('progressBarBtn')
 var statusText = document.getElementById('statusText')
 var recalibrateBtn = document.getElementById('recalibrateBtn')
 var poseCalibrateBtn = document.getElementById('poseCalibrateBtn')
@@ -24,6 +25,12 @@ function renderEnabled(enabled) {
     statusText.textContent = enabled ? 'Tracking is enabled for loaded pages.' : 'Tracking is disabled.'
     recalibrateBtn.disabled = !enabled
     poseCalibrateBtn.disabled = !enabled
+}
+
+function renderProgressBar(active) {
+    progressBarBtn.textContent = active ? 'Reading Progress: ON' : 'Reading Progress: OFF'
+    progressBarBtn.classList.toggle('enabled', active)
+    progressBarBtn.setAttribute('aria-pressed', active ? 'true' : 'false')
 }
 
 function renderCalibration(data) {
@@ -126,10 +133,11 @@ function pollMetrics() {
 }
 
 function readState() {
-    chrome.storage.local.get(['enabled', 'accuracyMode', 'calibrationMedianErrorPx', 'poseCalibrationQualityScore'], function (data) {
+    chrome.storage.local.get(['enabled', 'accuracyMode', 'calibrationMedianErrorPx', 'poseCalibrationQualityScore', 'readingProgress'], function (data) {
         var enabled = !!(data && data.enabled)
         var mode = data && data.accuracyMode ? data.accuracyMode : 'balanced'
         renderEnabled(enabled)
+        renderProgressBar(!!(data && data.readingProgress))
         modeSelect.value = mode
         renderCalibration(data)
         renderPoseCalibration(data)
@@ -147,6 +155,26 @@ toggleBtn.addEventListener('click', function () {
             sendToActiveTab({ type: 'NA_SET_ENABLED', enabled: nextEnabled }, function (ok) {
                 if (!ok && nextEnabled) {
                     statusText.textContent = 'Enabled globally. Open a normal website to start.'
+                }
+            })
+        })
+    })
+})
+
+progressBarBtn.addEventListener('click', function () {
+    chrome.storage.local.get(['readingProgress'], function (data) {
+        var next = !(data && data.readingProgress)
+        chrome.storage.local.set({ readingProgress: next }, function () {
+            renderProgressBar(next)
+            sendToActiveTab({ type: 'NA_SET_READING_PROGRESS', readingProgress: next }, function (ok) {
+                if (!ok) {
+                    statusText.textContent = next
+                        ? 'Reading Progress set. Open a normal webpage to see it.'
+                        : 'Reading Progress off.'
+                } else {
+                    statusText.textContent = next
+                        ? 'Reading Progress on — bar visible at top of page.'
+                        : 'Reading Progress off.'
                 }
             })
         })

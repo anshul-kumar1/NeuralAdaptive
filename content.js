@@ -1008,6 +1008,43 @@ function injectStyles() {
         '@media (prefers-reduced-motion: reduce) {',
         '  #na-breadcrumb-toast { animation: none; }',
         '}',
+
+        // ── Ambient Reading Progress Bar ─────────────────────────────────────
+        // Thin Princeton-orange bar pinned to the top of the viewport. Ratchets
+        // forward (never backward) based on the furthest paragraph read so far.
+        '#na-progress-bar {',
+        '  position: fixed;',
+        '  top: 0; left: 0;',
+        '  width: 100%; height: 3px;',
+        '  background: rgba(231, 117, 0, 0.08);',
+        '  z-index: 2147483643;',
+        '  pointer-events: none;',
+        '  opacity: 0;',
+        '  transition: opacity 0.4s ease;',
+        '}',
+        '#na-progress-bar.na-progress-visible { opacity: 1; }',
+        '#na-progress-bar-fill {',
+        '  height: 100%; width: 0%;',
+        '  background: linear-gradient(90deg, #E77500 0%, #F2A254 100%);',
+        '  box-shadow: 0 0 8px rgba(231, 117, 0, 0.5);',
+        '  transition: width 0.6s cubic-bezier(0.22,0.61,0.36,1);',
+        '}',
+        '#na-progress-badge {',
+        '  position: fixed;',
+        '  top: 10px; right: 14px;',
+        '  z-index: 2147483643;',
+        '  padding: 4px 10px;',
+        '  border-radius: 999px;',
+        '  background: rgba(10, 10, 16, 0.68);',
+        '  color: #E77500;',
+        '  font-family: "Segoe UI", Tahoma, sans-serif;',
+        '  font-size: 10px; font-weight: 700; letter-spacing: 0.08em;',
+        '  text-transform: uppercase;',
+        '  pointer-events: none;',
+        '  opacity: 0;',
+        '  transition: opacity 0.4s ease;',
+        '}',
+        '#na-progress-badge.na-progress-visible { opacity: 0.85; }',
     ].join('\n')
     document.head.appendChild(style)
 }
@@ -2370,6 +2407,140 @@ function applyInterventionStable(tier, state) {
     applyIntervention(targetTier, allow && state.isReading)
 }
 
+// ── Ambient Reading Progress Bar ─────────────────────────────────────────────
+// Thin top-of-viewport bar that ratchets forward based on the furthest paragraph
+// the reader has reached. Gives short-attention-span readers a visible sense of
+// momentum and a reachable endpoint. Works independently of focus mode and
+// works without eye tracking (falls back to viewport-center paragraph).
+var progressBarActive = false
+var progressBarEl = null
+var progressBarFillEl = null
+var progressBadgeEl = null
+var progressLoopTimer = null
+var progressFarthestIndex = -1
+var progressCachedRootSig = null
+var PROGRESS_POLL_MS = 500
+var PROGRESS_MIN_PARAGRAPHS = 3
+
+function progressCollectParagraphs() {
+    var root = findReadingContent()
+    if (!root) return null
+    var all = root.querySelectorAll('p')
+    var out = []
+    for (var i = 0; i < all.length; i++) {
+        var p = all[i]
+        var txt = (p.innerText || '').trim()
+        if (txt.length < 20) continue
+        out.push(p)
+    }
+    if (out.length < PROGRESS_MIN_PARAGRAPHS) return null
+    return out
+}
+
+function progressPickCurrentIndex(paragraphs) {
+    // Use gaze Y if available, else fall back to viewport center.
+    var gazeY = getRecentGazeY(2000)
+    if (gazeY == null) gazeY = window.innerHeight / 2
+
+    var bestIdx = -1
+    var bestDist = Infinity
+    for (var i = 0; i < paragraphs.length; i++) {
+        var r = paragraphs[i].getBoundingClientRect()
+        if (r.bottom < -200 || r.top > window.innerHeight + 200) continue
+        var dist
+        if (gazeY >= r.top && gazeY <= r.bottom) dist = 0
+        else if (gazeY < r.top) dist = r.top - gazeY
+        else dist = gazeY - r.bottom
+        if (dist < bestDist) { bestDist = dist; bestIdx = i }
+    }
+    return bestIdx
+}
+
+function progressUpdateUi(currentIdx, total) {
+    if (!progressBarFillEl || !progressBadgeEl) return
+    var pct = total > 0 ? Math.max(0, Math.min(1, (progressFarthestIndex + 1) / total)) : 0
+    progressBarFillEl.style.width = (pct * 100).toFixed(1) + '%'
+    var n = Math.max(0, progressFarthestIndex + 1)
+    progressBadgeEl.textContent = n + ' / ' + total
+}
+
+function progressTick() {
+    if (!progressBarActive) return
+    var paragraphs = progressCollectParagraphs()
+    if (!paragraphs) {
+        progressLoopTimer = setTimeout(progressTick, PROGRESS_POLL_MS)
+        return
+    }
+    // Reset the ratchet if the article changed (SPA navigation, new article).
+    var sig = paragraphs.length + ':' + (paragraphs[0].innerText || '').slice(0, 40)
+    if (sig !== progressCachedRootSig) {
+        progressCachedRootSig = sig
+        progressFarthestIndex = -1
+    }
+    var idx = progressPickCurrentIndex(paragraphs)
+    if (idx > progressFarthestIndex) progressFarthestIndex = idx
+    progressUpdateUi(idx, paragraphs.length)
+    progressLoopTimer = setTimeout(progressTick, PROGRESS_POLL_MS)
+}
+
+function startProgressBar() {
+    if (progressBarActive) return
+    injectStyles()
+    progressBarActive = true
+    if (!progressBarEl) {
+        progressBarEl = document.createElement('div')
+        progressBarEl.id = 'na-progress-bar'
+        progressBarFillEl = document.createElement('div')
+        progressBarFillEl.id = 'na-progress-bar-fill'
+        progressBarEl.appendChild(progressBarFillEl)
+        ;(document.body || document.documentElement).appendChild(progressBarEl)
+    }
+    if (!progressBadgeEl) {
+        progressBadgeEl = document.createElement('div')
+        progressBadgeEl.id = 'na-progress-badge'
+        progressBadgeEl.textContent = '0 / 0'
+        ;(document.body || document.documentElement).appendChild(progressBadgeEl)
+    }
+    // Fade in after a tick so the bar animates in rather than flashes.
+    setTimeout(function () {
+        if (progressBarEl) progressBarEl.classList.add('na-progress-visible')
+        if (progressBadgeEl) progressBadgeEl.classList.add('na-progress-visible')
+    }, 50)
+    if (progressLoopTimer) clearTimeout(progressLoopTimer)
+    progressTick()
+    console.log('[NeuralAdaptive] Reading Progress ON')
+}
+
+function stopProgressBar() {
+    if (!progressBarActive) return
+    progressBarActive = false
+    if (progressLoopTimer) {
+        clearTimeout(progressLoopTimer)
+        progressLoopTimer = null
+    }
+    if (progressBarEl) {
+        progressBarEl.classList.remove('na-progress-visible')
+        var bar = progressBarEl
+        setTimeout(function () { if (bar && bar.parentNode) bar.parentNode.removeChild(bar) }, 500)
+        progressBarEl = null
+        progressBarFillEl = null
+    }
+    if (progressBadgeEl) {
+        progressBadgeEl.classList.remove('na-progress-visible')
+        var badge = progressBadgeEl
+        setTimeout(function () { if (badge && badge.parentNode) badge.parentNode.removeChild(badge) }, 500)
+        progressBadgeEl = null
+    }
+    progressFarthestIndex = -1
+    progressCachedRootSig = null
+    console.log('[NeuralAdaptive] Reading Progress OFF')
+}
+
+function setProgressBar(active) {
+    if (active) startProgressBar()
+    else stopProgressBar()
+}
+
 var TIER_RANK = { CALM: 0, ELEVATED: 1, OVERLOAD: 2 }
 var maxTypographyTier = 'CALM'
 
@@ -2712,6 +2883,7 @@ chrome.storage.onChanged.addListener(function (changes, areaName) {
     if (changes.enabled) applyEnabledState(!!changes.enabled.newValue)
     if (changes.accuracyMode) applyAccuracyMode(changes.accuracyMode.newValue)
     if (changes.na_flags) activeFlags = mergeFlags(changes.na_flags.newValue)
+    if (changes.readingProgress) setProgressBar(!!changes.readingProgress.newValue)
 })
 
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
@@ -2747,6 +2919,12 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     if (message.type === 'NA_SET_ENABLED') {
         applyEnabledState(!!message.enabled)
         sendResponse({ ok: true })
+        return
+    }
+
+    if (message.type === 'NA_SET_READING_PROGRESS') {
+        setProgressBar(!!message.readingProgress)
+        sendResponse({ ok: true, readingProgress: progressBarActive })
         return
     }
 
@@ -2833,6 +3011,13 @@ document.addEventListener('keydown', function (e) {
         var el = findReadingContent()
         if (el) restoreAllSimplifications(el)
         resetTypography()
+    } else if (key === 'p') {
+        e.preventDefault()
+        var nextProg = !progressBarActive
+        chrome.storage.local.set({ readingProgress: nextProg }, function () {
+            if (chrome.runtime.lastError) { /* swallow */ }
+        })
+        setProgressBar(nextProg)
     }
 })
 
@@ -2850,13 +3035,17 @@ document.addEventListener('na-tracking-error', function (e) {
     }
 })
 
-chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags'], function (data) {
+chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgress'], function (data) {
     if (chrome.runtime.lastError) {
         console.warn('[NeuralAdaptive] storage unavailable in this frame:', chrome.runtime.lastError.message)
         return
     }
     applyAccuracyMode(data && data.accuracyMode ? data.accuracyMode : 'balanced')
     activeFlags = mergeFlags(data && data.na_flags)
+    if (data && data.readingProgress) {
+        // Progress bar runs without eye tracking (falls back to viewport center).
+        startProgressBar()
+    }
     var enabled = !!(data && data.enabled)
     if (!enabled) {
         console.log('[NeuralAdaptive] Disabled by default. Use popup to enable.')
