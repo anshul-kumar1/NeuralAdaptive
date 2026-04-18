@@ -1,4 +1,4 @@
-﻿// content.js - NeuralAdaptive v3.0.0
+// content.js - NeuralAdaptive v3.0.0
 // Gaze source: MediaPipe FaceMesh iris tracking in offscreen document (PDR v3).
 // Receives GAZE_UPDATE from background; drives DwellGrid, stress scoring, interventions.
 
@@ -304,6 +304,11 @@ function mergeFlags(flags) {
 async function loadFlagsFromStorage() {
     return await new Promise(function (resolve) {
         chrome.storage.local.get(['na_flags'], function (data) {
+            if (chrome.runtime.lastError) {
+                activeFlags = mergeFlags(null)
+                resolve(activeFlags)
+                return
+            }
             activeFlags = mergeFlags(data && data.na_flags)
             resolve(activeFlags)
         })
@@ -711,7 +716,9 @@ function mirrorSessionMetricsMaybe() {
     if (now - lastSessionMirrorTs < 1500) return
     lastSessionMirrorTs = now
     try {
-        chrome.storage.session.set({ na_session_metrics: buildSessionMetricsSnapshot() }, function () {})
+        chrome.storage.session.set({ na_session_metrics: buildSessionMetricsSnapshot() }, function () {
+            if (chrome.runtime.lastError) { /* swallow */ }
+        })
     } catch (_e) {}
 }
 
@@ -798,6 +805,125 @@ function injectStyles() {
         '.na-elevated p { line-height: 1.9 !important; letter-spacing: 0.04em !important; transition: all 0.6s ease !important; }',
         '.na-overload p { line-height: 2.1 !important; letter-spacing: 0.12em !important; max-width: 66ch !important; transition: all 0.6s ease !important; }',
         '.na-sentence { transition: opacity 0.4s ease; display: inline; }',
+
+        // ── Inline AI simplification (OVERLOAD tier) ─────────────────────────
+        '.na-dim-surround p:not(.na-simplified) { opacity: 0.35 !important; filter: blur(0.3px); transition: opacity 0.6s ease, filter 0.6s ease !important; }',
+        'p.na-simplified {',
+        '  opacity: 1 !important;',
+        '  filter: none !important;',
+        '  position: relative !important;',
+        '  font-size: 1.12em !important;',
+        '  line-height: 2.0 !important;',
+        '  letter-spacing: 0.02em !important;',
+        '  background: linear-gradient(180deg, rgba(231,117,0,0.08), rgba(231,117,0,0.03)) !important;',
+        '  border-left: 4px solid #E77500 !important;',
+        '  padding: 14px 18px 14px 20px !important;',
+        '  border-radius: 6px !important;',
+        '  margin: 16px 0 !important;',
+        '  transition: opacity 0.4s ease, background 0.4s ease !important;',
+        '  font-family: "Atkinson Hyperlegible", "Lexend", system-ui, sans-serif !important;',
+        '}',
+        '.na-simplified-badge {',
+        '  display: inline-flex; align-items: center; gap: 6px;',
+        '  font-size: 10px; font-weight: 700; letter-spacing: 0.12em;',
+        '  text-transform: uppercase; color: #E77500;',
+        '  margin-bottom: 8px;',
+        '}',
+        '.na-simplified-badge::before {',
+        '  content: ""; width: 6px; height: 6px; border-radius: 50%;',
+        '  background: #E77500; box-shadow: 0 0 6px rgba(231,117,0,0.7);',
+        '}',
+        '.na-simplified-toggle {',
+        '  background: transparent; border: 1px solid rgba(231,117,0,0.45);',
+        '  color: #E77500; font-size: 11px; font-weight: 600;',
+        '  padding: 3px 9px; border-radius: 4px; cursor: pointer;',
+        '  margin-left: 8px; letter-spacing: 0.04em;',
+        '  transition: background 0.2s ease !important;',
+        '}',
+        '.na-simplified-toggle:hover { background: rgba(231,117,0,0.12) !important; }',
+        '@keyframes na-simplify-pulse {',
+        '  0%,100% { background: rgba(231,117,0,0.05); }',
+        '  50%     { background: rgba(231,117,0,0.18); }',
+        '}',
+        'p.na-simplified-pending {',
+        '  opacity: 0.85 !important;',
+        '  filter: none !important;',
+        '  animation: na-simplify-pulse 1.4s ease-in-out infinite !important;',
+        '  border-left: 3px solid rgba(231,117,0,0.55) !important;',
+        '  padding-left: 14px !important;',
+        '  transition: all 0.3s ease !important;',
+        '}',
+
+        // ── Coach agent: summary bullets card ────────────────────────────────
+        'ul.na-coach-bullets {',
+        '  list-style: none !important;',
+        '  padding: 0 !important;',
+        '  margin: 10px 0 0 0 !important;',
+        '}',
+        'ul.na-coach-bullets li {',
+        '  position: relative !important;',
+        '  padding: 4px 0 4px 22px !important;',
+        '  font-size: 1.02em !important;',
+        '  line-height: 1.7 !important;',
+        '  color: inherit !important;',
+        '}',
+        'ul.na-coach-bullets li::before {',
+        '  content: ""; position: absolute; left: 4px; top: 14px;',
+        '  width: 8px; height: 8px; border-radius: 50%;',
+        '  background: #E77500; box-shadow: 0 0 6px rgba(231,117,0,0.6);',
+        '}',
+
+        // ── Coach agent: define card ─────────────────────────────────────────
+        'aside.na-coach-define {',
+        '  position: relative !important;',
+        '  margin: 14px 0 !important;',
+        '  padding: 12px 16px 12px 18px !important;',
+        '  background: linear-gradient(180deg, rgba(43,109,255,0.10), rgba(43,109,255,0.04)) !important;',
+        '  border-left: 4px solid #2B6DFF !important;',
+        '  border-radius: 6px !important;',
+        '  font-family: "Atkinson Hyperlegible", "Lexend", system-ui, sans-serif !important;',
+        '  opacity: 1 !important;',
+        '  filter: none !important;',
+        '}',
+        '.na-coach-define-head {',
+        '  font-size: 10px; font-weight: 700; letter-spacing: 0.14em;',
+        '  text-transform: uppercase; color: #2B6DFF; margin-bottom: 6px;',
+        '}',
+        '.na-coach-define-body { font-size: 1.02em; line-height: 1.6; }',
+        '.na-coach-define-foot {',
+        '  margin-top: 6px; font-size: 11px; opacity: 0.55; letter-spacing: 0.02em;',
+        '}',
+        '.na-coach-define-close {',
+        '  position: absolute; top: 6px; right: 8px;',
+        '  background: none; border: none; cursor: pointer;',
+        '  font-size: 14px; color: #2B6DFF; opacity: 0.55; line-height: 1;',
+        '}',
+        '.na-coach-define-close:hover { opacity: 1 !important; }',
+
+        // ── Coach agent: breadcrumb banner ───────────────────────────────────
+        '#na-breadcrumb {',
+        '  position: fixed; top: 20px; left: 50%; transform: translate(-50%, -20px);',
+        '  z-index: 2147483646; display: flex; align-items: center; gap: 12px;',
+        '  padding: 10px 16px; border-radius: 999px;',
+        '  background: rgba(10,10,16,0.94); color: #f1f1f1;',
+        '  font-family: "Segoe UI", Tahoma, sans-serif; font-size: 13px;',
+        '  border: 0.5px solid rgba(255,255,255,0.12);',
+        '  box-shadow: 0 8px 24px rgba(0,0,0,0.35);',
+        '  opacity: 0; transition: opacity 0.3s ease, transform 0.3s ease;',
+        '}',
+        '#na-breadcrumb.na-breadcrumb-visible {',
+        '  opacity: 1; transform: translate(-50%, 0);',
+        '}',
+        '.na-breadcrumb-label {',
+        '  font-size: 10px; font-weight: 700; letter-spacing: 0.14em;',
+        '  text-transform: uppercase; color: #E77500;',
+        '}',
+        '.na-breadcrumb-text { line-height: 1.4; }',
+        '.na-breadcrumb-close {',
+        '  background: none; border: none; color: #f1f1f1;',
+        '  cursor: pointer; font-size: 14px; opacity: 0.5; line-height: 1;',
+        '}',
+        '.na-breadcrumb-close:hover { opacity: 1 !important; }',
 
         // â”€â”€ Visual Anchor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         '@keyframes na-anchor-pulse {',
@@ -1776,7 +1902,12 @@ async function runCalibrationAndValidation(_force) {
                 poseYawLimit: poseLimits ? poseLimits.yawLimit : null,
                 posePitchLimit: poseLimits ? poseLimits.pitchLimit : null,
                 poseRollLimit: poseLimits ? poseLimits.rollLimit : null,
-            }, resolve)
+            }, function () {
+                if (chrome.runtime.lastError) {
+                    console.warn('[NeuralAdaptive] calibration save failed:', chrome.runtime.lastError.message)
+                }
+                resolve()
+            })
         })
 
         // Pose baseline already captured by runPoseCalibrationStep inside runPrincetonCalibration
@@ -1806,8 +1937,12 @@ async function shouldForceCalibration(forceRequested) {
     if (forceRequested) return true
     return await new Promise(function (resolve) {
         chrome.storage.local.get(['calibrationVersion', 'poseCalibrationVersion'], function (data) {
+            if (chrome.runtime.lastError) {
+                resolve(true)
+                return
+            }
             // Only re-calibrate when the calibration schema version changes,
-            // not when accuracy is below threshold â€” prevents re-entry loops.
+            // not when accuracy is below threshold — prevents re-entry loops.
             var hasVersion = data && data.calibrationVersion === CONFIG.CALIBRATION_VERSION
             var hasPoseVersion = data && data.poseCalibrationVersion === CONFIG.POSE_CALIBRATION_VERSION
             resolve(!hasVersion || !hasPoseVersion)
@@ -2051,7 +2186,9 @@ async function startNeuralAdaptive(options) {
         console.error('[NeuralAdaptive] Failed to start tracking:', msg)
         if (/permission dismissed|notallowed|camera api unavailable/i.test(msg)) {
             console.error('[NeuralAdaptive] Camera permission blocked — allow camera and try again.')
-            chrome.storage.local.set({ enabled: false }, function () {})
+            chrome.storage.local.set({ enabled: false }, function () {
+                if (chrome.runtime.lastError) { /* swallow */ }
+            })
         }
         isRunning = false
     } finally {
@@ -2090,9 +2227,9 @@ function stopNeuralAdaptive() {
 function clearAllInterventions() {
     removeTooltip()
     highlightedSentence = null
-    document.querySelectorAll('.na-elevated, .na-overload').forEach(function (el) {
-        el.classList.remove('na-elevated')
-        el.classList.remove('na-overload')
+    maxTypographyTier = 'CALM'
+    document.querySelectorAll('.na-elevated, .na-overload, .na-dim-surround').forEach(function (el) {
+        el.classList.remove('na-elevated', 'na-overload', 'na-dim-surround')
     })
     document.querySelectorAll('.na-sentence').forEach(function (span) {
         span.style.opacity = ''
@@ -2233,29 +2370,49 @@ function applyInterventionStable(tier, state) {
     applyIntervention(targetTier, allow && state.isReading)
 }
 
+var TIER_RANK = { CALM: 0, ELEVATED: 1, OVERLOAD: 2 }
+var maxTypographyTier = 'CALM'
+
 function applyIntervention(tier, isReading) {
     if (tier === currentTier) return
     currentTier = tier
     var el = findReadingContent()
     if (!el) return
 
-    el.classList.remove('na-calm', 'na-elevated', 'na-overload')
+    // Typography ratchets: once we reach ELEVATED or OVERLOAD, the class stays
+    // on the container even when stress drops. Only a manual reset clears it.
+    if (TIER_RANK[tier] > TIER_RANK[maxTypographyTier]) {
+        maxTypographyTier = tier
+        el.classList.remove('na-elevated', 'na-overload')
+        if (tier === 'ELEVATED') el.classList.add('na-elevated')
+        else if (tier === 'OVERLOAD') el.classList.add('na-overload')
+    }
+
+    // Dimming of surrounding paragraphs is transient — only active while the
+    // student is in OVERLOAD right now.
+    if (tier === 'OVERLOAD') el.classList.add('na-dim-surround')
+    else el.classList.remove('na-dim-surround')
+
     if (tier === 'CALM') {
         removeTooltip()
         clearSentenceHighlight(el)
         return
     }
     if (tier === 'ELEVATED') {
-        el.classList.add('na-elevated')
         clearSentenceHighlight(el)
         removeTooltip()
         return
     }
-    el.classList.add('na-overload')
     applySentenceHighlight(el)
-    // ReadingPattern gate: only fetch Gemini summary when actively reading
-    // (prevents tooltip spam during zone-out or static staring)
-    if (isReading !== false) triggerGeminiTooltip(el)
+    removeTooltip()
+    if (isReading !== false) triggerReadingAgent(el)
+}
+
+function resetTypography() {
+    maxTypographyTier = 'CALM'
+    document.querySelectorAll('.na-elevated, .na-overload, .na-dim-surround').forEach(function (el) {
+        el.classList.remove('na-elevated', 'na-overload', 'na-dim-surround')
+    })
 }
 
 function findReadingContent() {
@@ -2326,8 +2483,182 @@ function triggerGeminiTooltip(contentEl) {
         type: 'SUMMARIZE_PARAGRAPH',
         text: closestP.innerText.trim().slice(0, 800)
     }, function (response) {
-        if (response && response.summary) renderTooltip(response.summary)
+        if (chrome.runtime.lastError) {
+            console.warn('[NeuralAdaptive] summarize transport failed:', chrome.runtime.lastError.message)
+            return
+        }
+        if (!response) {
+            console.warn('[NeuralAdaptive] summarize returned no response')
+            return
+        }
+        if (response.error) {
+            console.warn('[NeuralAdaptive] summarize failed:', response.error)
+            return
+        }
+        if (response.summary) renderTooltip(response.summary)
     })
+}
+
+// ── Inline AI simplification (plain LLM call, no tool routing) ───────────────
+// On OVERLOAD we pick the paragraph closest to screen center and ask Dedalus
+// to rewrite it at a 6th-grade level. One-shot transformation — no agent,
+// no tools. Cache keyed by paragraph text so re-triggering is free.
+
+var simplificationCache = new Map()          // originalText → simplifiedText
+var simplifiedParagraphs = new Set()         // <p> elements currently transformed
+var pendingSimplification = new WeakSet()    // paragraphs with in-flight fetch
+var MIN_SIMPLIFY_WORDS = 30
+var MAX_SIMPLIFY_CHARS = 1400
+
+// Weighted average of the most recent gaze y positions (viewport space).
+// Weights recent samples more heavily so a quick glance doesn't hijack the
+// paragraph pick, but recent fixations do.
+function getRecentGazeY(windowMs) {
+    if (!gazeBuffer.length) return null
+    var now = Date.now()
+    var cutoff = now - (windowMs || 3000)
+    var wSum = 0, ySum = 0
+    for (var i = gazeBuffer.length - 1; i >= 0; i--) {
+        var s = gazeBuffer[i]
+        if (s.t < cutoff) break
+        var age = now - s.t
+        var w = 1 / (1 + age / 500)   // halves every 500ms
+        ySum += s.y * w
+        wSum += w
+    }
+    return wSum > 0 ? ySum / wSum : null
+}
+
+// Pick the paragraph the student is actually reading, based on recent gaze
+// position rather than screen center.
+function pickGazeParagraph(contentEl) {
+    var gazeY = getRecentGazeY(3000)
+    if (gazeY == null) gazeY = window.innerHeight / 2   // fallback: no gaze yet
+
+    var best = null
+    var bestDist = Infinity
+    contentEl.querySelectorAll('p').forEach(function (p) {
+        if (p.classList.contains('na-simplified')) return
+        var txt = (p.innerText || '').trim()
+        if (!txt) return
+        if (txt.split(/\s+/).length < MIN_SIMPLIFY_WORDS) return
+        var r = p.getBoundingClientRect()
+        if (r.bottom < 0 || r.top > window.innerHeight) return
+        var dist
+        if (gazeY >= r.top && gazeY <= r.bottom) dist = 0
+        else if (gazeY < r.top) dist = r.top - gazeY
+        else dist = gazeY - r.bottom
+        if (dist < bestDist) { bestDist = dist; best = p }
+    })
+    return best
+}
+
+function triggerReadingAgent(contentEl) {
+    var closestP = pickGazeParagraph(contentEl)
+    if (!closestP) return
+    if (pendingSimplification.has(closestP)) return
+
+    var original = closestP.innerText.trim()
+    var cacheKey = original.slice(0, MAX_SIMPLIFY_CHARS)
+
+    if (simplificationCache.has(cacheKey)) {
+        applySimplificationToParagraph(closestP, simplificationCache.get(cacheKey))
+        return
+    }
+
+    pendingSimplification.add(closestP)
+    closestP.classList.add('na-simplified-pending')
+
+    chrome.runtime.sendMessage({
+        type: 'SIMPLIFY_PARAGRAPH',
+        text: original.slice(0, MAX_SIMPLIFY_CHARS),
+    }, function (response) {
+        pendingSimplification.delete(closestP)
+        closestP.classList.remove('na-simplified-pending')
+
+        if (chrome.runtime.lastError) {
+            console.warn('[NeuralAdaptive] simplify transport failed:', chrome.runtime.lastError.message)
+            return
+        }
+        if (!response) {
+            console.warn('[NeuralAdaptive] simplify returned no response')
+            return
+        }
+        if (response.error) {
+            console.warn('[NeuralAdaptive] simplify failed:', response.error, {
+                preview: original.slice(0, 80),
+            })
+            return
+        }
+        if (!response.simplified) {
+            console.warn('[NeuralAdaptive] simplify returned empty text')
+            return
+        }
+
+        simplificationCache.set(cacheKey, response.simplified)
+        applySimplificationToParagraph(closestP, response.simplified)
+    })
+}
+
+function buildCoachBadge(label, reason) {
+    var badge = document.createElement('span')
+    badge.className = 'na-simplified-badge'
+    badge.textContent = label
+    if (reason) badge.title = reason
+    return badge
+}
+
+function buildCoachToggle(p, onClick) {
+    var toggle = document.createElement('button')
+    toggle.className = 'na-simplified-toggle'
+    toggle.type = 'button'
+    toggle.textContent = 'Show original'
+    toggle.addEventListener('click', function (ev) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        onClick()
+    })
+    return toggle
+}
+
+function applySimplificationToParagraph(p, simplifiedText, reason) {
+    if (p.classList.contains('na-simplified')) return
+    if (!p.dataset.naOriginalHtml) {
+        p.dataset.naOriginalHtml = p.innerHTML
+    }
+    var clean = String(simplifiedText || '').trim()
+    if (!clean) return
+
+    p.innerHTML = ''
+    p.appendChild(buildCoachBadge('Simplified for focus', reason))
+    p.appendChild(buildCoachToggle(p, function () { restoreParagraph(p) }))
+    var body = document.createElement('div')
+    body.style.marginTop = '8px'
+    body.textContent = clean
+    p.appendChild(body)
+
+    p.classList.add('na-simplified')
+    p.dataset.naCoachAction = 'simplify'
+    simplifiedParagraphs.add(p)
+}
+
+function restoreParagraph(p) {
+    if (!p.classList.contains('na-simplified')) return
+    var orig = p.dataset.naOriginalHtml
+    if (typeof orig === 'string') {
+        p.innerHTML = orig
+        delete p.dataset.naOriginalHtml
+    }
+    delete p.dataset.naCoachAction
+    p.classList.remove('na-simplified')
+    simplifiedParagraphs.delete(p)
+}
+
+function restoreAllSimplifications(contentEl) {
+    var root = contentEl || document
+    var nodes = root.querySelectorAll('p.na-simplified')
+    nodes.forEach(restoreParagraph)
+    simplifiedParagraphs.clear()
 }
 
 function renderTooltip(text) {
@@ -2461,7 +2792,12 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
                         poseYawLimit: poseLimits ? poseLimits.yawLimit : null,
                         posePitchLimit: poseLimits ? poseLimits.pitchLimit : null,
                         poseRollLimit: poseLimits ? poseLimits.rollLimit : null,
-                    }, resolve)
+                    }, function () {
+                        if (chrome.runtime.lastError) {
+                            console.warn('[NeuralAdaptive] pose cal save failed:', chrome.runtime.lastError.message)
+                        }
+                        resolve()
+                    })
                 })
                 sendResponse({ ok: true, poseResult: poseResult })
             } catch (e) {
@@ -2474,6 +2810,32 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     }
 })
 
+// ── Dev shortcuts for demoing AI simplification ──────────────────────────────
+//   Ctrl/Cmd + Shift + O  → force OVERLOAD (runs AI simplify on focused paragraph)
+//   Ctrl/Cmd + Shift + K  → force CALM    (stops dimming; keeps typography+simplify)
+//   Ctrl/Cmd + Shift + R  → reset typography + restore all simplified paragraphs
+document.addEventListener('keydown', function (e) {
+    var mod = e.ctrlKey || e.metaKey
+    if (!mod || !e.shiftKey) return
+    var key = e.key ? e.key.toLowerCase() : ''
+    if (key === 'o') {
+        e.preventDefault()
+        console.log('[NeuralAdaptive] dev shortcut → forcing OVERLOAD')
+        currentTier = 'CALM'    // reset so applyIntervention proceeds
+        applyIntervention('OVERLOAD', true)
+    } else if (key === 'k') {
+        e.preventDefault()
+        console.log('[NeuralAdaptive] dev shortcut → forcing CALM')
+        applyIntervention('CALM', true)
+    } else if (key === 'r') {
+        e.preventDefault()
+        console.log('[NeuralAdaptive] dev shortcut → resetting typography + simplifications')
+        var el = findReadingContent()
+        if (el) restoreAllSimplifications(el)
+        resetTypography()
+    }
+})
+
 // ── DOM event bridge from iris-tracker.js (MAIN world) ───────────────────────
 document.addEventListener('na-gaze', function (e) {
     onGazeUpdate(e.detail)
@@ -2482,11 +2844,17 @@ document.addEventListener('na-tracking-error', function (e) {
     var msg = e.detail && e.detail.error ? e.detail.error : 'unknown error'
     console.error('[NeuralAdaptive] Tracker error:', msg)
     if (/permission|notallowed/i.test(msg)) {
-        chrome.storage.local.set({ enabled: false }, function () {})
+        chrome.storage.local.set({ enabled: false }, function () {
+            if (chrome.runtime.lastError) { /* swallow */ }
+        })
     }
 })
 
 chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags'], function (data) {
+    if (chrome.runtime.lastError) {
+        console.warn('[NeuralAdaptive] storage unavailable in this frame:', chrome.runtime.lastError.message)
+        return
+    }
     applyAccuracyMode(data && data.accuracyMode ? data.accuracyMode : 'balanced')
     activeFlags = mergeFlags(data && data.na_flags)
     var enabled = !!(data && data.enabled)

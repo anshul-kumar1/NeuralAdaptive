@@ -100,7 +100,26 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
         callGemini(message.text).then(function (summary) {
             sendResponse({ summary: summary })
         }).catch(function (err) {
-            sendResponse({ summary: null, error: err.message })
+            var msg = err && err.message ? err.message : String(err)
+            console.error('[NeuralAdaptive] SUMMARIZE_PARAGRAPH failed:', msg, {
+                textPreview: (message.text || '').slice(0, 80),
+                error: err,
+            })
+            sendResponse({ summary: null, error: msg })
+        })
+        return true
+    }
+
+    if (message.type === 'SIMPLIFY_PARAGRAPH') {
+        simplifyViaGemini(message.text).then(function (simplified) {
+            sendResponse({ simplified: simplified })
+        }).catch(function (err) {
+            var msg = err && err.message ? err.message : String(err)
+            console.error('[NeuralAdaptive] SIMPLIFY_PARAGRAPH failed:', msg, {
+                textPreview: (message.text || '').slice(0, 80),
+                error: err,
+            })
+            sendResponse({ simplified: null, error: msg })
         })
         return true
     }
@@ -120,20 +139,97 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return false
 })
 
-var GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE'
-var GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY
+// ── Dedalus (Claude) routing ──────────────────────────────────────────────────
+// Dedalus exposes an OpenAI-compatible chat completions endpoint. The API key
+// can live in code for development; for production set it via
+//   chrome.storage.local.set({ dedalusApiKey: '...' })
+// and it will override the constant below.
+
+var DEDALUS_API_KEY = 'dsk-test-94af530a2791-b3bc6d4ca5fdcc568dce33e70df376a2'
+var DEDALUS_API_URL = 'https://api.dedaluslabs.ai/v1/chat/completions'
+var CLAUDE_MODEL    = 'anthropic/claude-haiku-4-5-20251001'
+
+var SUMMARIZE_SYSTEM_PROMPT =
+    'You are a reading assistant for a student with dyslexia or ADHD. ' +
+    'Given a paragraph, return exactly three bullet points capturing its ' +
+    'key ideas. Each bullet must be under 12 words. Return ONLY the bullets ' +
+    'as lines starting with a dash. No preamble, no closing remarks.'
+
+var SIMPLIFY_SYSTEM_PROMPT =
+    'You are a reading assistant for a student with dyslexia or ADHD who is ' +
+    'losing focus. Rewrite the passage at roughly a 6th-grade reading level. ' +
+    'Keep every key fact and the original point of view. Use short sentences ' +
+    '(max 15 words) and plain everyday words. Aim for about 60-70% of the ' +
+    'original length. Return ONLY the rewritten passage as plain prose — no ' +
+    'preamble, no bullets, no markdown, no quotation marks.'
+
+async function getDedalusKey() {
+    try {
+        var stored = await chrome.storage.local.get(['dedalusApiKey'])
+        if (stored && typeof stored.dedalusApiKey === 'string' && stored.dedalusApiKey.length > 0) {
+            return stored.dedalusApiKey
+        }
+    } catch (err) {
+        console.warn('[NeuralAdaptive] Could not read dedalusApiKey from storage:', err && err.message)
+    }
+    return DEDALUS_API_KEY
+}
 
 async function callGemini(text) {
-    var prompt = 'Summarize this paragraph into exactly 3 bullet points, each under 12 words. Return ONLY the bullets, no preamble.\n\n' + text
-    var res = await fetch(GEMINI_URL, {
+    return callDedalus(SUMMARIZE_SYSTEM_PROMPT, 'Paragraph:\n"' + text + '"', 300, 0.3)
+}
+
+async function simplifyViaGemini(text) {
+    return callDedalus(SIMPLIFY_SYSTEM_PROMPT, 'Passage:\n' + text, 600, 0.4)
+}
+
+async function callDedalus(systemPrompt, userPrompt, maxTokens, temperature) {
+    var apiKey = await getDedalusKey()
+    if (!apiKey) throw new Error('Dedalus API key not configured')
+
+    var res = await fetch(DEDALUS_API_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + apiKey,
+        },
         body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.3, maxOutputTokens: 150 }
-        })
+            model: CLAUDE_MODEL,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user',   content: userPrompt   },
+            ],
+            max_tokens: maxTokens,
+            temperature: temperature,
+        }),
     })
-    if (!res.ok) throw new Error('Gemini ' + res.status)
-    var data = await res.json()
-    return data.candidates[0].content.parts[0].text
+
+    if (!res.ok) {
+        var errText = ''
+        try { errText = await res.text() } catch (_) {}
+        console.error('[NeuralAdaptive] Dedalus HTTP error', {
+            status: res.status,
+            statusText: res.statusText,
+            model: CLAUDE_MODEL,
+            bodyPreview: errText.slice(0, 300),
+        })
+        throw new Error('Dedalus ' + res.status + (errText ? ': ' + errText.slice(0, 200) : ''))
+    }
+
+    var data
+    try {
+        data = await res.json()
+    } catch (err) {
+        console.error('[NeuralAdaptive] Dedalus JSON parse failed:', err)
+        throw new Error('Dedalus invalid JSON response')
+    }
+
+    var content = data && data.choices && data.choices[0] && data.choices[0].message
+        ? data.choices[0].message.content
+        : null
+    if (!content) {
+        console.error('[NeuralAdaptive] Dedalus empty response body:', data)
+        throw new Error('Dedalus empty response')
+    }
+    return String(content).trim()
 }
