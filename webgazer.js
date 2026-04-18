@@ -19946,44 +19946,8 @@ numeric.dim = function dim(x) {
     return [];
 }
 
-numeric.mapreduce = function mapreduce(body,init) {
-    return Function('x','accum','_s','_k',
-            'if(typeof accum === "undefined") accum = '+init+';\n'+
-            'if(typeof x === "number") { var xi = x; '+body+'; return accum; }\n'+
-            'if(typeof _s === "undefined") _s = numeric.dim(x);\n'+
-            'if(typeof _k === "undefined") _k = 0;\n'+
-            'var _n = _s[_k];\n'+
-            'var i,xi;\n'+
-            'if(_k < _s.length-1) {\n'+
-            '    for(i=_n-1;i>=0;i--) {\n'+
-            '        accum = arguments.callee(x[i],accum,_s,_k+1);\n'+
-            '    }'+
-            '    return accum;\n'+
-            '}\n'+
-            'for(i=_n-1;i>=1;i-=2) { \n'+
-            '    xi = x[i];\n'+
-            '    '+body+';\n'+
-            '    xi = x[i-1];\n'+
-            '    '+body+';\n'+
-            '}\n'+
-            'if(i === 0) {\n'+
-            '    xi = x[i];\n'+
-            '    '+body+'\n'+
-            '}\n'+
-            'return accum;'
-            );
-}
-numeric.mapreduce2 = function mapreduce2(body,setup) {
-    return Function('x',
-            'var n = x.length;\n'+
-            'var i,xi;\n'+setup+';\n'+
-            'for(i=n-1;i!==-1;--i) { \n'+
-            '    xi = x[i];\n'+
-            '    '+body+';\n'+
-            '}\n'+
-            'return accum;'
-            );
-}
+numeric.mapreduce = function mapreduce(body,init) { return function() { throw new Error('numeric.mapreduce: eval disabled in MV3'); }; };
+numeric.mapreduce2 = function mapreduce2(body,setup) { return function() { throw new Error('numeric.mapreduce2: eval disabled in MV3'); }; };
 
 
 numeric.same = function same(x,y) {
@@ -20144,64 +20108,8 @@ numeric.getDiag = function(A) {
 }
 
 numeric.identity = function identity(n) { return numeric.diag(numeric.rep([n],1)); }
-numeric.pointwise = function pointwise(params,body,setup) {
-    if(typeof setup === "undefined") { setup = ""; }
-    var fun = [];
-    var k;
-    var avec = /\[i\]$/,p,thevec = '';
-    var haveret = false;
-    for(k=0;k<params.length;k++) {
-        if(avec.test(params[k])) {
-            p = params[k].substring(0,params[k].length-3);
-            thevec = p;
-        } else { p = params[k]; }
-        if(p==='ret') haveret = true;
-        fun.push(p);
-    }
-    fun[params.length] = '_s';
-    fun[params.length+1] = '_k';
-    fun[params.length+2] = (
-            'if(typeof _s === "undefined") _s = numeric.dim('+thevec+');\n'+
-            'if(typeof _k === "undefined") _k = 0;\n'+
-            'var _n = _s[_k];\n'+
-            'var i'+(haveret?'':', ret = Array(_n)')+';\n'+
-            'if(_k < _s.length-1) {\n'+
-            '    for(i=_n-1;i>=0;i--) ret[i] = arguments.callee('+params.join(',')+',_s,_k+1);\n'+
-            '    return ret;\n'+
-            '}\n'+
-            setup+'\n'+
-            'for(i=_n-1;i!==-1;--i) {\n'+
-            '    '+body+'\n'+
-            '}\n'+
-            'return ret;'
-            );
-    return Function.apply(null,fun);
-}
-numeric.pointwise2 = function pointwise2(params,body,setup) {
-    if(typeof setup === "undefined") { setup = ""; }
-    var fun = [];
-    var k;
-    var avec = /\[i\]$/,p,thevec = '';
-    var haveret = false;
-    for(k=0;k<params.length;k++) {
-        if(avec.test(params[k])) {
-            p = params[k].substring(0,params[k].length-3);
-            thevec = p;
-        } else { p = params[k]; }
-        if(p==='ret') haveret = true;
-        fun.push(p);
-    }
-    fun[params.length] = (
-            'var _n = '+thevec+'.length;\n'+
-            'var i'+(haveret?'':', ret = Array(_n)')+';\n'+
-            setup+'\n'+
-            'for(i=_n-1;i!==-1;--i) {\n'+
-            body+'\n'+
-            '}\n'+
-            'return ret;'
-            );
-    return Function.apply(null,fun);
-}
+numeric.pointwise = function pointwise(params,body,setup) { return function() { throw new Error('numeric.pointwise: eval disabled in MV3'); }; };
+numeric.pointwise2 = function pointwise2(params,body,setup) { return function() { throw new Error('numeric.pointwise2: eval disabled in MV3'); }; };
 numeric._biforeach = (function _biforeach(x,y,s,k,f) {
     if(k === s.length-1) { f(x,y); return; }
     var i,n=s[k];
@@ -20286,121 +20194,1090 @@ numeric.mapreducers = {
         inf: ['accum = min(accum,xi);','var accum = Infinity, min = Math.min;']
 };
 
-(function () {
-    var i,o;
-    for(i=0;i<numeric.mathfuns2.length;++i) {
-        o = numeric.mathfuns2[i];
-        numeric.ops2[o] = o;
-    }
-    for(i in numeric.ops2) {
-        if(numeric.ops2.hasOwnProperty(i)) {
-            o = numeric.ops2[i];
-            var code, codeeq, setup = '';
-            if(numeric.myIndexOf.call(numeric.mathfuns2,i)!==-1) {
-                setup = 'var '+o+' = Math.'+o+';\n';
-                code = function(r,x,y) { return r+' = '+o+'('+x+','+y+')'; };
-                codeeq = function(x,y) { return x+' = '+o+'('+x+','+y+')'; };
-            } else {
-                code = function(r,x,y) { return r+' = '+x+' '+o+' '+y; };
-                if(numeric.opseq.hasOwnProperty(i+'eq')) {
-                    codeeq = function(x,y) { return x+' '+o+'= '+y; };
-                } else {
-                    codeeq = function(x,y) { return x+' = '+x+' '+o+' '+y; };                    
-                }
-            }
-            numeric[i+'VV'] = numeric.pointwise2(['x[i]','y[i]'],code('ret[i]','x[i]','y[i]'),setup);
-            numeric[i+'SV'] = numeric.pointwise2(['x','y[i]'],code('ret[i]','x','y[i]'),setup);
-            numeric[i+'VS'] = numeric.pointwise2(['x[i]','y'],code('ret[i]','x[i]','y'),setup);
-            numeric[i] = Function(
-                    'var n = arguments.length, i, x = arguments[0], y;\n'+
-                    'var VV = numeric.'+i+'VV, VS = numeric.'+i+'VS, SV = numeric.'+i+'SV;\n'+
-                    'var dim = numeric.dim;\n'+
-                    'for(i=1;i!==n;++i) { \n'+
-                    '  y = arguments[i];\n'+
-                    '  if(typeof x === "object") {\n'+
-                    '      if(typeof y === "object") x = numeric._biforeach2(x,y,dim(x),0,VV);\n'+
-                    '      else x = numeric._biforeach2(x,y,dim(x),0,VS);\n'+
-                    '  } else if(typeof y === "object") x = numeric._biforeach2(x,y,dim(y),0,SV);\n'+
-                    '  else '+codeeq('x','y')+'\n'+
-                    '}\nreturn x;\n');
-            numeric[o] = numeric[i];
-            numeric[i+'eqV'] = numeric.pointwise2(['ret[i]','x[i]'], codeeq('ret[i]','x[i]'),setup);
-            numeric[i+'eqS'] = numeric.pointwise2(['ret[i]','x'], codeeq('ret[i]','x'),setup);
-            numeric[i+'eq'] = Function(
-                    'var n = arguments.length, i, x = arguments[0], y;\n'+
-                    'var V = numeric.'+i+'eqV, S = numeric.'+i+'eqS\n'+
-                    'var s = numeric.dim(x);\n'+
-                    'for(i=1;i!==n;++i) { \n'+
-                    '  y = arguments[i];\n'+
-                    '  if(typeof y === "object") numeric._biforeach(x,y,s,0,V);\n'+
-                    '  else numeric._biforeach(x,y,s,0,S);\n'+
-                    '}\nreturn x;\n');
-        }
-    }
-    for(i=0;i<numeric.mathfuns2.length;++i) {
-        o = numeric.mathfuns2[i];
-        delete numeric.ops2[o];
-    }
-    for(i=0;i<numeric.mathfuns.length;++i) {
-        o = numeric.mathfuns[i];
-        numeric.ops1[o] = o;
-    }
-    for(i in numeric.ops1) {
-        if(numeric.ops1.hasOwnProperty(i)) {
-            setup = '';
-            o = numeric.ops1[i];
-            if(numeric.myIndexOf.call(numeric.mathfuns,i)!==-1) {
-                if(Math.hasOwnProperty(o)) setup = 'var '+o+' = Math.'+o+';\n';
-            }
-            numeric[i+'eqV'] = numeric.pointwise2(['ret[i]'],'ret[i] = '+o+'(ret[i]);',setup);
-            numeric[i+'eq'] = Function('x',
-                    'if(typeof x !== "object") return '+o+'x\n'+
-                    'var i;\n'+
-                    'var V = numeric.'+i+'eqV;\n'+
-                    'var s = numeric.dim(x);\n'+
-                    'numeric._foreach(x,s,0,V);\n'+
-                    'return x;\n');
-            numeric[i+'V'] = numeric.pointwise2(['x[i]'],'ret[i] = '+o+'(x[i]);',setup);
-            numeric[i] = Function('x',
-                    'if(typeof x !== "object") return '+o+'(x)\n'+
-                    'var i;\n'+
-                    'var V = numeric.'+i+'V;\n'+
-                    'var s = numeric.dim(x);\n'+
-                    'return numeric._foreach2(x,s,0,V);\n');
-        }
-    }
-    for(i=0;i<numeric.mathfuns.length;++i) {
-        o = numeric.mathfuns[i];
-        delete numeric.ops1[o];
-    }
-    for(i in numeric.mapreducers) {
-        if(numeric.mapreducers.hasOwnProperty(i)) {
-            o = numeric.mapreducers[i];
-            numeric[i+'V'] = numeric.mapreduce2(o[0],o[1]);
-            numeric[i] = Function('x','s','k',
-                    o[1]+
-                    'if(typeof x !== "object") {'+
-                    '    xi = x;\n'+
-                    o[0]+';\n'+
-                    '    return accum;\n'+
-                    '}'+
-                    'if(typeof s === "undefined") s = numeric.dim(x);\n'+
-                    'if(typeof k === "undefined") k = 0;\n'+
-                    'if(k === s.length-1) return numeric.'+i+'V(x);\n'+
-                    'var xi;\n'+
-                    'var n = x.length, i;\n'+
-                    'for(i=n-1;i!==-1;--i) {\n'+
-                    '   xi = arguments.callee(x[i]);\n'+
-                    o[0]+';\n'+
-                    '}\n'+
-                    'return accum;\n');
-        }
-    }
-}());
-
-numeric.truncVV = numeric.pointwise(['x[i]','y[i]'],'ret[i] = round(x[i]/y[i])*y[i];','var round = Math.round;');
-numeric.truncVS = numeric.pointwise(['x[i]','y'],'ret[i] = round(x[i]/y)*y;','var round = Math.round;');
-numeric.truncSV = numeric.pointwise(['x','y[i]'],'ret[i] = round(x/y[i])*y[i];','var round = Math.round;');
+// AUTO-GENERATED by pregen_numeric.js — do not edit by hand
+// Replaces all new Function() calls in numeric.js for MV3 CSP compliance
+(function(){
+numeric['addVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] + y[i];} return ret;};
+numeric['addSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x + y[i];} return ret;};
+numeric['addVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] + y;} return ret;};
+numeric['add'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['addVV'],VS=numeric['addVS'],SV=numeric['addSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x += y;
+  }
+  return x;
+};
+numeric['addeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] += x[i];}};
+numeric['addeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] += x;}};
+numeric['addeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['addeqV'],S=numeric['addeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['subVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] - y[i];} return ret;};
+numeric['subSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x - y[i];} return ret;};
+numeric['subVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] - y;} return ret;};
+numeric['sub'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['subVV'],VS=numeric['subVS'],SV=numeric['subSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x -= y;
+  }
+  return x;
+};
+numeric['subeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] -= x[i];}};
+numeric['subeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] -= x;}};
+numeric['subeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['subeqV'],S=numeric['subeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['mulVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] * y[i];} return ret;};
+numeric['mulSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x * y[i];} return ret;};
+numeric['mulVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] * y;} return ret;};
+numeric['mul'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['mulVV'],VS=numeric['mulVS'],SV=numeric['mulSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x *= y;
+  }
+  return x;
+};
+numeric['muleqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] *= x[i];}};
+numeric['muleqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] *= x;}};
+numeric['muleq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['muleqV'],S=numeric['muleqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['divVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] / y[i];} return ret;};
+numeric['divSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x / y[i];} return ret;};
+numeric['divVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] / y;} return ret;};
+numeric['div'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['divVV'],VS=numeric['divVS'],SV=numeric['divSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x /= y;
+  }
+  return x;
+};
+numeric['diveqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] /= x[i];}};
+numeric['diveqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] /= x;}};
+numeric['diveq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['diveqV'],S=numeric['diveqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['modVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] % y[i];} return ret;};
+numeric['modSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x % y[i];} return ret;};
+numeric['modVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] % y;} return ret;};
+numeric['mod'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['modVV'],VS=numeric['modVS'],SV=numeric['modSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x %= y;
+  }
+  return x;
+};
+numeric['modeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] %= x[i];}};
+numeric['modeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] %= x;}};
+numeric['modeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['modeqV'],S=numeric['modeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['andVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] && y[i];} return ret;};
+numeric['andSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x && y[i];} return ret;};
+numeric['andVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] && y;} return ret;};
+numeric['and'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['andVV'],VS=numeric['andVS'],SV=numeric['andSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x && y;
+  }
+  return x;
+};
+numeric['andeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] && x[i];}};
+numeric['andeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] && x;}};
+numeric['andeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['andeqV'],S=numeric['andeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['orVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] || y[i];} return ret;};
+numeric['orSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x || y[i];} return ret;};
+numeric['orVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] || y;} return ret;};
+numeric['or'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['orVV'],VS=numeric['orVS'],SV=numeric['orSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x || y;
+  }
+  return x;
+};
+numeric['oreqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] || x[i];}};
+numeric['oreqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] || x;}};
+numeric['oreq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['oreqV'],S=numeric['oreqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['eqVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] === y[i];} return ret;};
+numeric['eqSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x === y[i];} return ret;};
+numeric['eqVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] === y;} return ret;};
+numeric['eq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['eqVV'],VS=numeric['eqVS'],SV=numeric['eqSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x === y;
+  }
+  return x;
+};
+numeric['eqeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] === x[i];}};
+numeric['eqeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] === x;}};
+numeric['eqeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['eqeqV'],S=numeric['eqeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['neqVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] !== y[i];} return ret;};
+numeric['neqSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x !== y[i];} return ret;};
+numeric['neqVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] !== y;} return ret;};
+numeric['neq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['neqVV'],VS=numeric['neqVS'],SV=numeric['neqSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x !== y;
+  }
+  return x;
+};
+numeric['neqeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] !== x[i];}};
+numeric['neqeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] !== x;}};
+numeric['neqeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['neqeqV'],S=numeric['neqeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['ltVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] < y[i];} return ret;};
+numeric['ltSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x < y[i];} return ret;};
+numeric['ltVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] < y;} return ret;};
+numeric['lt'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['ltVV'],VS=numeric['ltVS'],SV=numeric['ltSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x < y;
+  }
+  return x;
+};
+numeric['lteqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] < x[i];}};
+numeric['lteqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] < x;}};
+numeric['lteq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['lteqV'],S=numeric['lteqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['gtVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] > y[i];} return ret;};
+numeric['gtSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x > y[i];} return ret;};
+numeric['gtVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] > y;} return ret;};
+numeric['gt'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['gtVV'],VS=numeric['gtVS'],SV=numeric['gtSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x > y;
+  }
+  return x;
+};
+numeric['gteqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] > x[i];}};
+numeric['gteqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] > x;}};
+numeric['gteq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['gteqV'],S=numeric['gteqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['leqVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] <= y[i];} return ret;};
+numeric['leqSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x <= y[i];} return ret;};
+numeric['leqVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] <= y;} return ret;};
+numeric['leq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['leqVV'],VS=numeric['leqVS'],SV=numeric['leqSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x <= y;
+  }
+  return x;
+};
+numeric['leqeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] <= x[i];}};
+numeric['leqeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] <= x;}};
+numeric['leqeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['leqeqV'],S=numeric['leqeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['geqVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] >= y[i];} return ret;};
+numeric['geqSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x >= y[i];} return ret;};
+numeric['geqVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] >= y;} return ret;};
+numeric['geq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['geqVV'],VS=numeric['geqVS'],SV=numeric['geqSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = x >= y;
+  }
+  return x;
+};
+numeric['geqeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] >= x[i];}};
+numeric['geqeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = ret[i] >= x;}};
+numeric['geqeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['geqeqV'],S=numeric['geqeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['bandVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] & y[i];} return ret;};
+numeric['bandSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x & y[i];} return ret;};
+numeric['bandVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] & y;} return ret;};
+numeric['band'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['bandVV'],VS=numeric['bandVS'],SV=numeric['bandSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x &= y;
+  }
+  return x;
+};
+numeric['bandeqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] &= x[i];}};
+numeric['bandeqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] &= x;}};
+numeric['bandeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['bandeqV'],S=numeric['bandeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['borVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] | y[i];} return ret;};
+numeric['borSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x | y[i];} return ret;};
+numeric['borVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] | y;} return ret;};
+numeric['bor'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['borVV'],VS=numeric['borVS'],SV=numeric['borSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x |= y;
+  }
+  return x;
+};
+numeric['boreqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] |= x[i];}};
+numeric['boreqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] |= x;}};
+numeric['boreq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['boreqV'],S=numeric['boreqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['bxorVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] ^ y[i];} return ret;};
+numeric['bxorSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x ^ y[i];} return ret;};
+numeric['bxorVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] ^ y;} return ret;};
+numeric['bxor'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['bxorVV'],VS=numeric['bxorVS'],SV=numeric['bxorSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x ^= y;
+  }
+  return x;
+};
+numeric['bxoreqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] ^= x[i];}};
+numeric['bxoreqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] ^= x;}};
+numeric['bxoreq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['bxoreqV'],S=numeric['bxoreqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['lshiftVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] << y[i];} return ret;};
+numeric['lshiftSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x << y[i];} return ret;};
+numeric['lshiftVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] << y;} return ret;};
+numeric['lshift'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['lshiftVV'],VS=numeric['lshiftVS'],SV=numeric['lshiftSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x <<= y;
+  }
+  return x;
+};
+numeric['lshifteqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] <<= x[i];}};
+numeric['lshifteqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] <<= x;}};
+numeric['lshifteq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['lshifteqV'],S=numeric['lshifteqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['rshiftVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] >> y[i];} return ret;};
+numeric['rshiftSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x >> y[i];} return ret;};
+numeric['rshiftVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] >> y;} return ret;};
+numeric['rshift'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['rshiftVV'],VS=numeric['rshiftVS'],SV=numeric['rshiftSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x >>= y;
+  }
+  return x;
+};
+numeric['rshifteqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] >>= x[i];}};
+numeric['rshifteqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] >>= x;}};
+numeric['rshifteq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['rshifteqV'],S=numeric['rshifteqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['rrshiftVV'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] >>> y[i];} return ret;};
+numeric['rrshiftSV'] = function(x,y){ var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x >>> y[i];} return ret;};
+numeric['rrshiftVS'] = function(x,y){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = x[i] >>> y;} return ret;};
+numeric['rrshift'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['rrshiftVV'],VS=numeric['rrshiftVS'],SV=numeric['rrshiftSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x >>>= y;
+  }
+  return x;
+};
+numeric['rrshifteqV'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] >>>= x[i];}};
+numeric['rrshifteqS'] = function(ret,x){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] >>>= x;}};
+numeric['rrshifteq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['rrshifteqV'],S=numeric['rrshifteqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['atan2VV'] = function(x,y){var atan2 = Math.atan2; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = atan2(x[i],y[i]);} return ret;};
+numeric['atan2SV'] = function(x,y){var atan2 = Math.atan2; var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = atan2(x,y[i]);} return ret;};
+numeric['atan2VS'] = function(x,y){var atan2 = Math.atan2; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = atan2(x[i],y);} return ret;};
+numeric['atan2'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['atan2VV'],VS=numeric['atan2VS'],SV=numeric['atan2SV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = Math.atan2(x,y);
+  }
+  return x;
+};
+numeric['atan2'] = numeric['atan2'];
+numeric['atan2eqV'] = function(ret,x){var atan2 = Math.atan2; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = atan2(ret[i],x[i]);}};
+numeric['atan2eqS'] = function(ret,x){var atan2 = Math.atan2; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = atan2(ret[i],x);}};
+numeric['atan2eq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['atan2eqV'],S=numeric['atan2eqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['powVV'] = function(x,y){var pow = Math.pow; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = pow(x[i],y[i]);} return ret;};
+numeric['powSV'] = function(x,y){var pow = Math.pow; var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = pow(x,y[i]);} return ret;};
+numeric['powVS'] = function(x,y){var pow = Math.pow; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = pow(x[i],y);} return ret;};
+numeric['pow'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['powVV'],VS=numeric['powVS'],SV=numeric['powSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = Math.pow(x,y);
+  }
+  return x;
+};
+numeric['pow'] = numeric['pow'];
+numeric['poweqV'] = function(ret,x){var pow = Math.pow; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = pow(ret[i],x[i]);}};
+numeric['poweqS'] = function(ret,x){var pow = Math.pow; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = pow(ret[i],x);}};
+numeric['poweq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['poweqV'],S=numeric['poweqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['maxVV'] = function(x,y){var max = Math.max; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = max(x[i],y[i]);} return ret;};
+numeric['maxSV'] = function(x,y){var max = Math.max; var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = max(x,y[i]);} return ret;};
+numeric['maxVS'] = function(x,y){var max = Math.max; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = max(x[i],y);} return ret;};
+numeric['max'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['maxVV'],VS=numeric['maxVS'],SV=numeric['maxSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = Math.max(x,y);
+  }
+  return x;
+};
+numeric['max'] = numeric['max'];
+numeric['maxeqV'] = function(ret,x){var max = Math.max; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = max(ret[i],x[i]);}};
+numeric['maxeqS'] = function(ret,x){var max = Math.max; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = max(ret[i],x);}};
+numeric['maxeq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['maxeqV'],S=numeric['maxeqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['minVV'] = function(x,y){var min = Math.min; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = min(x[i],y[i]);} return ret;};
+numeric['minSV'] = function(x,y){var min = Math.min; var _n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = min(x,y[i]);} return ret;};
+numeric['minVS'] = function(x,y){var min = Math.min; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i] = min(x[i],y);} return ret;};
+numeric['min'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var VV=numeric['minVV'],VS=numeric['minVS'],SV=numeric['minSV'];
+  var dim=numeric.dim;
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof x==='object'){if(typeof y==='object') x=numeric._biforeach2(x,y,dim(x),0,VV); else x=numeric._biforeach2(x,y,dim(x),0,VS);}
+    else if(typeof y==='object') x=numeric._biforeach2(x,y,dim(y),0,SV);
+    else x = Math.min(x,y);
+  }
+  return x;
+};
+numeric['min'] = numeric['min'];
+numeric['mineqV'] = function(ret,x){var min = Math.min; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = min(ret[i],x[i]);}};
+numeric['mineqS'] = function(ret,x){var min = Math.min; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i] = min(ret[i],x);}};
+numeric['mineq'] = function(){
+  var n=arguments.length,i,x=arguments[0],y;
+  var V=numeric['mineqV'],S=numeric['mineqS'];
+  var s=numeric.dim(x);
+  for(i=1;i!==n;++i){
+    y=arguments[i];
+    if(typeof y==='object') numeric._biforeach(x,y,s,0,V);
+    else numeric._biforeach(x,y,s,0,S);
+  }
+  return x;
+};
+numeric['negeqV'] = function(ret){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=-ret[i];} return ret;};
+numeric['negeq'] = function(x){
+  if(typeof x!=='object') return -x;
+  var V=numeric['negeqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['negV'] = function(x){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=-x[i];} return ret;};
+numeric['neg'] = function(x){
+  if(typeof x!=='object') return -x;
+  var V=numeric['negV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['noteqV'] = function(ret){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=!ret[i];} return ret;};
+numeric['noteq'] = function(x){
+  if(typeof x!=='object') return !x;
+  var V=numeric['noteqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['notV'] = function(x){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=!x[i];} return ret;};
+numeric['not'] = function(x){
+  if(typeof x!=='object') return !x;
+  var V=numeric['notV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['bnoteqV'] = function(ret){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=~ret[i];} return ret;};
+numeric['bnoteq'] = function(x){
+  if(typeof x!=='object') return ~x;
+  var V=numeric['bnoteqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['bnotV'] = function(x){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=~x[i];} return ret;};
+numeric['bnot'] = function(x){
+  if(typeof x!=='object') return ~x;
+  var V=numeric['bnotV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['cloneeqV'] = function(ret){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=ret[i];} return ret;};
+numeric['cloneeq'] = function(x){
+  if(typeof x!=='object') return x;
+  var V=numeric['cloneeqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['cloneV'] = function(x){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=x[i];} return ret;};
+numeric['clone'] = function(x){
+  if(typeof x!=='object') return x;
+  var V=numeric['cloneV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['abseqV'] = function(ret){var abs = Math.abs; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=abs(ret[i]);} return ret;};
+numeric['abseq'] = function(x){
+  if(typeof x!=='object') return abs(x);
+  var V=numeric['abseqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['absV'] = function(x){var abs = Math.abs; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=abs(x[i]);} return ret;};
+numeric['abs'] = function(x){
+  if(typeof x!=='object') return abs(x);
+  var V=numeric['absV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['acoseqV'] = function(ret){var acos = Math.acos; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=acos(ret[i]);} return ret;};
+numeric['acoseq'] = function(x){
+  if(typeof x!=='object') return acos(x);
+  var V=numeric['acoseqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['acosV'] = function(x){var acos = Math.acos; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=acos(x[i]);} return ret;};
+numeric['acos'] = function(x){
+  if(typeof x!=='object') return acos(x);
+  var V=numeric['acosV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['asineqV'] = function(ret){var asin = Math.asin; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=asin(ret[i]);} return ret;};
+numeric['asineq'] = function(x){
+  if(typeof x!=='object') return asin(x);
+  var V=numeric['asineqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['asinV'] = function(x){var asin = Math.asin; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=asin(x[i]);} return ret;};
+numeric['asin'] = function(x){
+  if(typeof x!=='object') return asin(x);
+  var V=numeric['asinV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['ataneqV'] = function(ret){var atan = Math.atan; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=atan(ret[i]);} return ret;};
+numeric['ataneq'] = function(x){
+  if(typeof x!=='object') return atan(x);
+  var V=numeric['ataneqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['atanV'] = function(x){var atan = Math.atan; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=atan(x[i]);} return ret;};
+numeric['atan'] = function(x){
+  if(typeof x!=='object') return atan(x);
+  var V=numeric['atanV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['ceileqV'] = function(ret){var ceil = Math.ceil; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=ceil(ret[i]);} return ret;};
+numeric['ceileq'] = function(x){
+  if(typeof x!=='object') return ceil(x);
+  var V=numeric['ceileqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['ceilV'] = function(x){var ceil = Math.ceil; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=ceil(x[i]);} return ret;};
+numeric['ceil'] = function(x){
+  if(typeof x!=='object') return ceil(x);
+  var V=numeric['ceilV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['coseqV'] = function(ret){var cos = Math.cos; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=cos(ret[i]);} return ret;};
+numeric['coseq'] = function(x){
+  if(typeof x!=='object') return cos(x);
+  var V=numeric['coseqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['cosV'] = function(x){var cos = Math.cos; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=cos(x[i]);} return ret;};
+numeric['cos'] = function(x){
+  if(typeof x!=='object') return cos(x);
+  var V=numeric['cosV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['expeqV'] = function(ret){var exp = Math.exp; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=exp(ret[i]);} return ret;};
+numeric['expeq'] = function(x){
+  if(typeof x!=='object') return exp(x);
+  var V=numeric['expeqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['expV'] = function(x){var exp = Math.exp; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=exp(x[i]);} return ret;};
+numeric['exp'] = function(x){
+  if(typeof x!=='object') return exp(x);
+  var V=numeric['expV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['flooreqV'] = function(ret){var floor = Math.floor; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=floor(ret[i]);} return ret;};
+numeric['flooreq'] = function(x){
+  if(typeof x!=='object') return floor(x);
+  var V=numeric['flooreqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['floorV'] = function(x){var floor = Math.floor; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=floor(x[i]);} return ret;};
+numeric['floor'] = function(x){
+  if(typeof x!=='object') return floor(x);
+  var V=numeric['floorV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['logeqV'] = function(ret){var log = Math.log; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=log(ret[i]);} return ret;};
+numeric['logeq'] = function(x){
+  if(typeof x!=='object') return log(x);
+  var V=numeric['logeqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['logV'] = function(x){var log = Math.log; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=log(x[i]);} return ret;};
+numeric['log'] = function(x){
+  if(typeof x!=='object') return log(x);
+  var V=numeric['logV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['roundeqV'] = function(ret){var round = Math.round; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=round(ret[i]);} return ret;};
+numeric['roundeq'] = function(x){
+  if(typeof x!=='object') return round(x);
+  var V=numeric['roundeqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['roundV'] = function(x){var round = Math.round; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=round(x[i]);} return ret;};
+numeric['round'] = function(x){
+  if(typeof x!=='object') return round(x);
+  var V=numeric['roundV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['sineqV'] = function(ret){var sin = Math.sin; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=sin(ret[i]);} return ret;};
+numeric['sineq'] = function(x){
+  if(typeof x!=='object') return sin(x);
+  var V=numeric['sineqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['sinV'] = function(x){var sin = Math.sin; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=sin(x[i]);} return ret;};
+numeric['sin'] = function(x){
+  if(typeof x!=='object') return sin(x);
+  var V=numeric['sinV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['sqrteqV'] = function(ret){var sqrt = Math.sqrt; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=sqrt(ret[i]);} return ret;};
+numeric['sqrteq'] = function(x){
+  if(typeof x!=='object') return sqrt(x);
+  var V=numeric['sqrteqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['sqrtV'] = function(x){var sqrt = Math.sqrt; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=sqrt(x[i]);} return ret;};
+numeric['sqrt'] = function(x){
+  if(typeof x!=='object') return sqrt(x);
+  var V=numeric['sqrtV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['taneqV'] = function(ret){var tan = Math.tan; var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=tan(ret[i]);} return ret;};
+numeric['taneq'] = function(x){
+  if(typeof x!=='object') return tan(x);
+  var V=numeric['taneqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['tanV'] = function(x){var tan = Math.tan; var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=tan(x[i]);} return ret;};
+numeric['tan'] = function(x){
+  if(typeof x!=='object') return tan(x);
+  var V=numeric['tanV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['isNaNeqV'] = function(ret){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=isNaN(ret[i]);} return ret;};
+numeric['isNaNeq'] = function(x){
+  if(typeof x!=='object') return isNaN(x);
+  var V=numeric['isNaNeqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['isNaNV'] = function(x){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=isNaN(x[i]);} return ret;};
+numeric['isNaN'] = function(x){
+  if(typeof x!=='object') return isNaN(x);
+  var V=numeric['isNaNV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['isFiniteeqV'] = function(ret){ var _n=ret.length,i; for(i=_n-1;i!==-1;--i){ret[i]=isFinite(ret[i]);} return ret;};
+numeric['isFiniteeq'] = function(x){
+  if(typeof x!=='object') return isFinite(x);
+  var V=numeric['isFiniteeqV'];
+  var s=numeric.dim(x);
+  numeric._foreach(x,s,0,V);
+  return x;
+};
+numeric['isFiniteV'] = function(x){ var _n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=isFinite(x[i]);} return ret;};
+numeric['isFinite'] = function(x){
+  if(typeof x!=='object') return isFinite(x);
+  var V=numeric['isFiniteV'];
+  var s=numeric.dim(x);
+  return numeric._foreach2(x,s,0,V);
+};
+numeric['anyV'] = function(x){
+  var accum = false;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; if(xi) return true; }
+  return accum;
+};
+numeric['any'] = function(x,s,k){
+  var accum = false;
+  if(typeof x!=='object'){ var xi=x; if(xi) return true; return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['anyV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['any'](x[i]); if(xi) return true; }
+  return accum;
+};
+numeric['allV'] = function(x){
+  var accum = true;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; if(!xi) return false; }
+  return accum;
+};
+numeric['all'] = function(x,s,k){
+  var accum = true;
+  if(typeof x!=='object'){ var xi=x; if(!xi) return false; return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['allV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['all'](x[i]); if(!xi) return false; }
+  return accum;
+};
+numeric['sumV'] = function(x){
+  var accum = 0;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; accum += xi; }
+  return accum;
+};
+numeric['sum'] = function(x,s,k){
+  var accum = 0;
+  if(typeof x!=='object'){ var xi=x; accum += xi; return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['sumV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['sum'](x[i]); accum += xi; }
+  return accum;
+};
+numeric['prodV'] = function(x){
+  var accum = 1;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; accum *= xi; }
+  return accum;
+};
+numeric['prod'] = function(x,s,k){
+  var accum = 1;
+  if(typeof x!=='object'){ var xi=x; accum *= xi; return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['prodV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['prod'](x[i]); accum *= xi; }
+  return accum;
+};
+numeric['norm2SquaredV'] = function(x){
+  var accum = 0;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; accum += xi*xi; }
+  return accum;
+};
+numeric['norm2Squared'] = function(x,s,k){
+  var accum = 0;
+  if(typeof x!=='object'){ var xi=x; accum += xi*xi; return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['norm2SquaredV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['norm2Squared'](x[i]); accum += xi*xi; }
+  return accum;
+};
+numeric['norminfV'] = function(x){
+  var accum = 0, max = Math.max, abs = Math.abs;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; accum = max(accum,abs(xi)); }
+  return accum;
+};
+numeric['norminf'] = function(x,s,k){
+  var accum = 0, max = Math.max, abs = Math.abs;
+  if(typeof x!=='object'){ var xi=x; accum = max(accum,abs(xi)); return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['norminfV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['norminf'](x[i]); accum = max(accum,abs(xi)); }
+  return accum;
+};
+numeric['norm1V'] = function(x){
+  var accum = 0, abs = Math.abs;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; accum += abs(xi) }
+  return accum;
+};
+numeric['norm1'] = function(x,s,k){
+  var accum = 0, abs = Math.abs;
+  if(typeof x!=='object'){ var xi=x; accum += abs(xi); return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['norm1V'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['norm1'](x[i]); accum += abs(xi) }
+  return accum;
+};
+numeric['supV'] = function(x){
+  var accum = -Infinity, max = Math.max;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; accum = max(accum,xi); }
+  return accum;
+};
+numeric['sup'] = function(x,s,k){
+  var accum = -Infinity, max = Math.max;
+  if(typeof x!=='object'){ var xi=x; accum = max(accum,xi); return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['supV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['sup'](x[i]); accum = max(accum,xi); }
+  return accum;
+};
+numeric['infV'] = function(x){
+  var accum = Infinity, min = Math.min;
+  var _n=x.length,i,xi;
+  for(i=_n-1;i!==-1;--i){ xi=x[i]; accum = min(accum,xi); }
+  return accum;
+};
+numeric['inf'] = function(x,s,k){
+  var accum = Infinity, min = Math.min;
+  if(typeof x!=='object'){ var xi=x; accum = min(accum,xi); return accum; }
+  if(typeof s==='undefined') s=numeric.dim(x);
+  if(typeof k==='undefined') k=0;
+  if(k===s.length-1) return numeric['infV'](x);
+  var xi, n=x.length,i;
+  for(i=n-1;i!==-1;--i){ xi=numeric['inf'](x[i]); accum = min(accum,xi); }
+  return accum;
+};
+numeric['truncVV'] = function(x,y){ var round=Math.round,_n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=round(x[i]/y[i])*y[i];} return ret; };
+numeric['truncVS'] = function(x,y){ var round=Math.round,_n=x.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=round(x[i]/y)*y;} return ret; };
+numeric['truncSV'] = function(x,y){ var round=Math.round,_n=y.length,i,ret=Array(_n); for(i=_n-1;i!==-1;--i){ret[i]=round(x/y[i])*y[i];} return ret; };
+})();
 numeric.trunc = function trunc(x,y) {
     if(typeof x === "object") {
         if(typeof y === "object") return numeric.truncVV(x,y);
@@ -20639,33 +21516,7 @@ numeric.tensor = function tensor(x,y) {
 numeric.T = function T(x,y) { this.x = x; this.y = y; }
 numeric.t = function t(x,y) { return new numeric.T(x,y); }
 
-numeric.Tbinop = function Tbinop(rr,rc,cr,cc,setup) {
-    var io = numeric.indexOf;
-    if(typeof setup !== "string") {
-        var k;
-        setup = '';
-        for(k in numeric) {
-            if(numeric.hasOwnProperty(k) && (rr.indexOf(k)>=0 || rc.indexOf(k)>=0 || cr.indexOf(k)>=0 || cc.indexOf(k)>=0) && k.length>1) {
-                setup += 'var '+k+' = numeric.'+k+';\n';
-            }
-        }
-    }
-    return Function(['y'],
-            'var x = this;\n'+
-            'if(!(y instanceof numeric.T)) { y = new numeric.T(y); }\n'+
-            setup+'\n'+
-            'if(x.y) {'+
-            '  if(y.y) {'+
-            '    return new numeric.T('+cc+');\n'+
-            '  }\n'+
-            '  return new numeric.T('+cr+');\n'+
-            '}\n'+
-            'if(y.y) {\n'+
-            '  return new numeric.T('+rc+');\n'+
-            '}\n'+
-            'return new numeric.T('+rr+');\n'
-    );
-}
+numeric.Tbinop = function Tbinop(rr,rc,cr,cc,setup) { return function() { throw new Error('numeric.Tbinop: eval disabled in MV3'); }; };
 
 numeric.T.prototype.add = numeric.Tbinop(
         'add(x.x,y.x)',
@@ -20714,17 +21565,7 @@ numeric.T.prototype.transjugate = function transjugate() {
     if(y) { return new numeric.T(t(x),numeric.negtranspose(y)); }
     return new numeric.T(t(x));
 }
-numeric.Tunop = function Tunop(r,c,s) {
-    if(typeof s !== "string") { s = ''; }
-    return Function(
-            'var x = this;\n'+
-            s+'\n'+
-            'if(x.y) {'+
-            '  '+c+';\n'+
-            '}\n'+
-            r+';\n'
-    );
-}
+numeric.Tunop = function Tunop(r,c,s) { return function() { throw new Error('numeric.Tunop: eval disabled in MV3'); }; };
 
 numeric.T.prototype.exp = numeric.Tunop(
         'return new numeric.T(ex)',
@@ -21580,71 +22421,9 @@ numeric.ccsLUPSolve = function ccsLUPSolve(LUP,B) {
     return [Xi,Xj,Xv];
 }
 
-numeric.ccsbinop = function ccsbinop(body,setup) {
-    if(typeof setup === "undefined") setup='';
-    return Function('X','Y',
-            'var Xi = X[0], Xj = X[1], Xv = X[2];\n'+
-            'var Yi = Y[0], Yj = Y[1], Yv = Y[2];\n'+
-            'var n = Xi.length-1,m = Math.max(numeric.sup(Xj),numeric.sup(Yj))+1;\n'+
-            'var Zi = numeric.rep([n+1],0), Zj = [], Zv = [];\n'+
-            'var x = numeric.rep([m],0),y = numeric.rep([m],0);\n'+
-            'var xk,yk,zk;\n'+
-            'var i,j,j0,j1,k,p=0;\n'+
-            setup+
-            'for(i=0;i<n;++i) {\n'+
-            '  j0 = Xi[i]; j1 = Xi[i+1];\n'+
-            '  for(j=j0;j!==j1;++j) {\n'+
-            '    k = Xj[j];\n'+
-            '    x[k] = 1;\n'+
-            '    Zj[p] = k;\n'+
-            '    ++p;\n'+
-            '  }\n'+
-            '  j0 = Yi[i]; j1 = Yi[i+1];\n'+
-            '  for(j=j0;j!==j1;++j) {\n'+
-            '    k = Yj[j];\n'+
-            '    y[k] = Yv[j];\n'+
-            '    if(x[k] === 0) {\n'+
-            '      Zj[p] = k;\n'+
-            '      ++p;\n'+
-            '    }\n'+
-            '  }\n'+
-            '  Zi[i+1] = p;\n'+
-            '  j0 = Xi[i]; j1 = Xi[i+1];\n'+
-            '  for(j=j0;j!==j1;++j) x[Xj[j]] = Xv[j];\n'+
-            '  j0 = Zi[i]; j1 = Zi[i+1];\n'+
-            '  for(j=j0;j!==j1;++j) {\n'+
-            '    k = Zj[j];\n'+
-            '    xk = x[k];\n'+
-            '    yk = y[k];\n'+
-            body+'\n'+
-            '    Zv[j] = zk;\n'+
-            '  }\n'+
-            '  j0 = Xi[i]; j1 = Xi[i+1];\n'+
-            '  for(j=j0;j!==j1;++j) x[Xj[j]] = 0;\n'+
-            '  j0 = Yi[i]; j1 = Yi[i+1];\n'+
-            '  for(j=j0;j!==j1;++j) y[Yj[j]] = 0;\n'+
-            '}\n'+
-            'return [Zi,Zj,Zv];'
-            );
-};
+numeric.ccsbinop = function ccsbinop(body,setup) { return function() { throw new Error('numeric.ccsbinop: eval disabled in MV3'); }; };
 
-(function() {
-    var k,A,B,C;
-    for(k in numeric.ops2) {
-        if(isFinite(eval('1'+numeric.ops2[k]+'0'))) A = '[Y[0],Y[1],numeric.'+k+'(X,Y[2])]';
-        else A = 'NaN';
-        if(isFinite(eval('0'+numeric.ops2[k]+'1'))) B = '[X[0],X[1],numeric.'+k+'(X[2],Y)]';
-        else B = 'NaN';
-        if(isFinite(eval('1'+numeric.ops2[k]+'0')) && isFinite(eval('0'+numeric.ops2[k]+'1'))) C = 'numeric.ccs'+k+'MM(X,Y)';
-        else C = 'NaN';
-        numeric['ccs'+k+'MM'] = numeric.ccsbinop('zk = xk '+numeric.ops2[k]+'yk;');
-        numeric['ccs'+k] = Function('X','Y',
-                'if(typeof X === "number") return '+A+';\n'+
-                'if(typeof Y === "number") return '+B+';\n'+
-                'return '+C+';\n'
-                );
-    }
-}());
+// CCS sparse-matrix ops removed — eval/Function disabled in MV3; not needed for ridge regression
 
 numeric.ccsScatter = function ccsScatter(A) {
     var Ai = A[0], Aj = A[1], Av = A[2];
@@ -50866,7 +51645,7 @@ const tf = __webpack_require__(0);
 const keypoints_1 = __webpack_require__(297);
 const pipeline_1 = __webpack_require__(298);
 const uv_coords_1 = __webpack_require__(300);
-const FACEMESH_GRAPHMODEL_PATH = 'https://tfhub.dev/mediapipe/tfjs-model/facemesh/1/default/1';
+const FACEMESH_GRAPHMODEL_PATH = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL('models/facemesh/model.json') : 'https://tfhub.dev/mediapipe/tfjs-model/facemesh/1/default/1';
 const MESH_MODEL_INPUT_WIDTH = 192;
 const MESH_MODEL_INPUT_HEIGHT = 192;
 async function load({ maxContinuousChecks = 5, detectionConfidence = 0.9, maxFaces = 10, iouThreshold = 0.3, scoreThreshold = 0.75 } = {}) {
@@ -50881,7 +51660,7 @@ async function loadDetectorModel(maxFaces, iouThreshold, scoreThreshold) {
     return blazeface.load({ maxFaces, iouThreshold, scoreThreshold });
 }
 async function loadMeshModel() {
-    return tfconv.loadGraphModel(FACEMESH_GRAPHMODEL_PATH, { fromTFHub: true });
+    return tfconv.loadGraphModel(FACEMESH_GRAPHMODEL_PATH, { fromTFHub: FACEMESH_GRAPHMODEL_PATH.startsWith('https://tfhub.dev') });
 }
 function getInputTensorDimensions(input) {
     return input instanceof tf.Tensor ? [input.shape[0], input.shape[1]] :
@@ -78441,7 +79220,7 @@ __webpack_require__.r(__webpack_exports__);
     * limitations under the License.
     * =============================================================================
     */
-const disposeBox=t=>{t.startEndTensor.dispose(),t.startPoint.dispose(),t.endPoint.dispose()},createBox=t=>({startEndTensor:t,startPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,0],[-1,2]),endPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,2],[-1,2])}),scaleBox=(t,o)=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.startPoint,o),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.endPoint,o),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([s,e],1);return createBox(i)},ANCHORS_CONFIG={strides:[8,16],anchors:[2,6]},NUM_LANDMARKS=6;function generateAnchors(t,o,s){const e=[];for(let i=0;i<s.strides.length;i++){const n=s.strides[i],a=Math.floor((o+n-1)/n),r=Math.floor((t+n-1)/n),c=s.anchors[i];for(let t=0;t<a;t++){const o=n*(t+.5);for(let t=0;t<r;t++){const s=n*(t+.5);for(let t=0;t<c;t++)e.push([s,o])}}}return e}function decodeBounds(t,o,s){const e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,1],[-1,2]),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(e,o),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,3],[-1,2]),a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(n,s),r=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(i,s),c=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(a,2),l=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(r,c),d=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(r,c),h=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(l,s),p=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(d,s);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([h,p],1)}function getInputTensorDimensions(t){return t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?[t.shape[0],t.shape[1]]:[t.height,t.width]}function flipFaceHorizontal(t,o){let s,e,i;if(t.topLeft instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]&&t.bottomRight instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]){const[n,a]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>[Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.topLeft.slice(0,1)),t.topLeft.slice(1,1)]),Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.bottomRight.slice(0,1)),t.bottomRight.slice(1,1)])]);s=n,e=a,null!=t.landmarks&&(i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o-1,0]),t.landmarks),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([1,-1]);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(s,e)}))}else{const[n,a]=t.topLeft,[r,c]=t.bottomRight;s=[o-1-n,a],e=[o-1-r,c],null!=t.landmarks&&(i=t.landmarks.map(t=>[o-1-t[0],t[1]]))}const n={topLeft:s,bottomRight:e};return null!=i&&(n.landmarks=i),null!=t.probability&&(n.probability=t.probability instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?t.probability.clone():t.probability),n}function scaleBoxFromPrediction(t,o){return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{let s;return s=t.hasOwnProperty("box")?t.box:t,scaleBox(s,o).startEndTensor.squeeze()})}class BlazeFaceModel{constructor(t,o,s,e,i,n){this.blazeFaceModel=t,this.width=o,this.height=s,this.maxFaces=e,this.anchorsData=generateAnchors(o,s,ANCHORS_CONFIG),this.anchors=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(this.anchorsData),this.inputSizeData=[o,s],this.inputSize=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o,s]),this.iouThreshold=i,this.scoreThreshold=n}async getBoundingBoxes(t,o,s=!0){const[e,i,n]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const o=t.resizeBilinear([this.width,this.height]),s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o.div(255),.5),2),e=this.blazeFaceModel.predict(s).squeeze(),i=decodeBounds(e,this.anchors,this.inputSize),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[0,0],[-1,1]);return[e,i,Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sigmoid"])(n).squeeze()]}),a=console.warn;console.warn=(()=>{});const r=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["image"].nonMaxSuppression(i,n,this.maxFaces,this.iouThreshold,this.scoreThreshold);console.warn=a;const c=await r.array();r.dispose();let l=c.map(t=>Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(i,[t,0],[1,-1]));o||(l=await Promise.all(l.map(async t=>{const o=await t.array();return t.dispose(),o})));const d=t.shape[1],h=t.shape[2];let p;p=o?Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])([h,d],this.inputSize):[h/this.inputSizeData[0],d/this.inputSizeData[1]];const u=[];for(let t=0;t<l.length;t++){const i=l[t],a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const a=createBox(i instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?i:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(i));if(!s)return a;const r=c[t];let l;return l=o?this.anchors.slice([r,0],[1,2]):this.anchorsData[r],{box:a,landmarks:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[r,NUM_LANDMARKS-1],[1,-1]).squeeze().reshape([NUM_LANDMARKS,-1]),probability:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(n,[r],[1]),anchor:l}});u.push(a)}return i.dispose(),n.dispose(),e.dispose(),{boxes:u,scaleFactor:p}}async estimateFaces(t,o=!1,s=!1,e=!0){const[,i]=getInputTensorDimensions(t),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>(t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]||(t=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["browser"].fromPixels(t)),t.toFloat().expandDims(0))),{boxes:a,scaleFactor:r}=await this.getBoundingBoxes(n,o,e);return n.dispose(),o?a.map(t=>{const o=scaleBoxFromPrediction(t,r);let n={topLeft:o.slice([0],[2]),bottomRight:o.slice([2],[2])};if(e){const{landmarks:o,probability:s,anchor:e}=t,i=o.add(e).mul(r);n.landmarks=i,n.probability=s}return s&&(n=flipFaceHorizontal(n,i)),n}):Promise.all(a.map(async t=>{const o=scaleBoxFromPrediction(t,r);let n;if(e){const[s,e,i]=await Promise.all([t.landmarks,o,t.probability].map(async t=>t.array())),a=t.anchor,[c,l]=r,d=s.map(t=>[(t[0]+a[0])*c,(t[1]+a[1])*l]);n={topLeft:e.slice(0,2),bottomRight:e.slice(2),landmarks:d,probability:i},disposeBox(t.box),t.landmarks.dispose(),t.probability.dispose()}else{const t=await o.array();n={topLeft:t.slice(0,2),bottomRight:t.slice(2)}}return o.dispose(),s&&(n=flipFaceHorizontal(n,i)),n}))}}const BLAZEFACE_MODEL_URL="https://tfhub.dev/tensorflow/tfjs-model/blazeface/1/default/1";async function load({maxFaces:t=10,inputWidth:o=128,inputHeight:s=128,iouThreshold:e=.3,scoreThreshold:i=.75}={}){const n=await Object(_tensorflow_tfjs_converter__WEBPACK_IMPORTED_MODULE_1__["loadGraphModel"])(BLAZEFACE_MODEL_URL,{fromTFHub:!0});return new BlazeFaceModel(n,o,s,t,e,i)}
+const disposeBox=t=>{t.startEndTensor.dispose(),t.startPoint.dispose(),t.endPoint.dispose()},createBox=t=>({startEndTensor:t,startPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,0],[-1,2]),endPoint:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,2],[-1,2])}),scaleBox=(t,o)=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.startPoint,o),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(t.endPoint,o),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([s,e],1);return createBox(i)},ANCHORS_CONFIG={strides:[8,16],anchors:[2,6]},NUM_LANDMARKS=6;function generateAnchors(t,o,s){const e=[];for(let i=0;i<s.strides.length;i++){const n=s.strides[i],a=Math.floor((o+n-1)/n),r=Math.floor((t+n-1)/n),c=s.anchors[i];for(let t=0;t<a;t++){const o=n*(t+.5);for(let t=0;t<r;t++){const s=n*(t+.5);for(let t=0;t<c;t++)e.push([s,o])}}}return e}function decodeBounds(t,o,s){const e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,1],[-1,2]),i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(e,o),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(t,[0,3],[-1,2]),a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(n,s),r=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(i,s),c=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])(a,2),l=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(r,c),d=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["add"])(r,c),h=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(l,s),p=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(d,s);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat2d"])([h,p],1)}function getInputTensorDimensions(t){return t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?[t.shape[0],t.shape[1]]:[t.height,t.width]}function flipFaceHorizontal(t,o){let s,e,i;if(t.topLeft instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]&&t.bottomRight instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]){const[n,a]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>[Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.topLeft.slice(0,1)),t.topLeft.slice(1,1)]),Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["concat"])([Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o-1,t.bottomRight.slice(0,1)),t.bottomRight.slice(1,1)])]);s=n,e=a,null!=t.landmarks&&(i=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o-1,0]),t.landmarks),e=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([1,-1]);return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(s,e)}))}else{const[n,a]=t.topLeft,[r,c]=t.bottomRight;s=[o-1-n,a],e=[o-1-r,c],null!=t.landmarks&&(i=t.landmarks.map(t=>[o-1-t[0],t[1]]))}const n={topLeft:s,bottomRight:e};return null!=i&&(n.landmarks=i),null!=t.probability&&(n.probability=t.probability instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?t.probability.clone():t.probability),n}function scaleBoxFromPrediction(t,o){return Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{let s;return s=t.hasOwnProperty("box")?t.box:t,scaleBox(s,o).startEndTensor.squeeze()})}class BlazeFaceModel{constructor(t,o,s,e,i,n){this.blazeFaceModel=t,this.width=o,this.height=s,this.maxFaces=e,this.anchorsData=generateAnchors(o,s,ANCHORS_CONFIG),this.anchors=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(this.anchorsData),this.inputSizeData=[o,s],this.inputSize=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor1d"])([o,s]),this.iouThreshold=i,this.scoreThreshold=n}async getBoundingBoxes(t,o,s=!0){const[e,i,n]=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const o=t.resizeBilinear([this.width,this.height]),s=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["mul"])(Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sub"])(o.div(255),.5),2),e=this.blazeFaceModel.predict(s).squeeze(),i=decodeBounds(e,this.anchors,this.inputSize),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[0,0],[-1,1]);return[e,i,Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["sigmoid"])(n).squeeze()]}),a=console.warn;console.warn=(()=>{});const r=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["image"].nonMaxSuppression(i,n,this.maxFaces,this.iouThreshold,this.scoreThreshold);console.warn=a;const c=await r.array();r.dispose();let l=c.map(t=>Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(i,[t,0],[1,-1]));o||(l=await Promise.all(l.map(async t=>{const o=await t.array();return t.dispose(),o})));const d=t.shape[1],h=t.shape[2];let p;p=o?Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["div"])([h,d],this.inputSize):[h/this.inputSizeData[0],d/this.inputSizeData[1]];const u=[];for(let t=0;t<l.length;t++){const i=l[t],a=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>{const a=createBox(i instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]?i:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tensor2d"])(i));if(!s)return a;const r=c[t];let l;return l=o?this.anchors.slice([r,0],[1,2]):this.anchorsData[r],{box:a,landmarks:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(e,[r,NUM_LANDMARKS-1],[1,-1]).squeeze().reshape([NUM_LANDMARKS,-1]),probability:Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["slice"])(n,[r],[1]),anchor:l}});u.push(a)}return i.dispose(),n.dispose(),e.dispose(),{boxes:u,scaleFactor:p}}async estimateFaces(t,o=!1,s=!1,e=!0){const[,i]=getInputTensorDimensions(t),n=Object(_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["tidy"])(()=>(t instanceof _tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["Tensor"]||(t=_tensorflow_tfjs_core__WEBPACK_IMPORTED_MODULE_0__["browser"].fromPixels(t)),t.toFloat().expandDims(0))),{boxes:a,scaleFactor:r}=await this.getBoundingBoxes(n,o,e);return n.dispose(),o?a.map(t=>{const o=scaleBoxFromPrediction(t,r);let n={topLeft:o.slice([0],[2]),bottomRight:o.slice([2],[2])};if(e){const{landmarks:o,probability:s,anchor:e}=t,i=o.add(e).mul(r);n.landmarks=i,n.probability=s}return s&&(n=flipFaceHorizontal(n,i)),n}):Promise.all(a.map(async t=>{const o=scaleBoxFromPrediction(t,r);let n;if(e){const[s,e,i]=await Promise.all([t.landmarks,o,t.probability].map(async t=>t.array())),a=t.anchor,[c,l]=r,d=s.map(t=>[(t[0]+a[0])*c,(t[1]+a[1])*l]);n={topLeft:e.slice(0,2),bottomRight:e.slice(2),landmarks:d,probability:i},disposeBox(t.box),t.landmarks.dispose(),t.probability.dispose()}else{const t=await o.array();n={topLeft:t.slice(0,2),bottomRight:t.slice(2)}}return o.dispose(),s&&(n=flipFaceHorizontal(n,i)),n}))}}const BLAZEFACE_MODEL_URL=(typeof chrome!=='undefined'&&chrome.runtime&&chrome.runtime.getURL)?chrome.runtime.getURL('models/blazeface/model.json'):'https://tfhub.dev/tensorflow/tfjs-model/blazeface/1/default/1';async function load({maxFaces:t=10,inputWidth:o=128,inputHeight:s=128,iouThreshold:e=.3,scoreThreshold:i=.75}={}){const n=await Object(_tensorflow_tfjs_converter__WEBPACK_IMPORTED_MODULE_1__["loadGraphModel"])(BLAZEFACE_MODEL_URL,{fromTFHub:BLAZEFACE_MODEL_URL.startsWith('https://tfhub.dev')});return new BlazeFaceModel(n,o,s,t,e,i)}
 
 
 /***/ }),

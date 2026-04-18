@@ -34,7 +34,9 @@
         {
             "resources": [
                 "webgazer.js",
-                "mediapipe/face_mesh/*"
+                "mediapipe/face_mesh/*",
+                "models/blazeface/*",
+                "models/facemesh/*"
             ],
             "matches": [
                 "<all_urls>"

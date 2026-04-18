@@ -60,6 +60,22 @@ async function initWebGazer() {
         return
     }
 
+    // Pre-flight: verify the TF FaceMesh model loaded from TFHub before begin().
+    // If the page CSP blocks https://tfhub.dev, the model promise is already rejected
+    // and begin() will throw an opaque "t is not a function" (minified TF TypeError).
+    var tracker = window.webgazer.getTracker()
+    if (tracker && tracker.model) {
+        try {
+            await tracker.model
+            console.log('[NeuralAdaptive] TF FaceMesh model ready')
+        } catch (modelErr) {
+            var modelMsg = modelErr && modelErr.message ? modelErr.message : String(modelErr)
+            console.error('[NeuralAdaptive] TF FaceMesh model failed to load: ' + modelMsg)
+            console.error('[NeuralAdaptive] This page\'s CSP may be blocking https://tfhub.dev — check the Network tab for blocked requests to tfhub.dev or storage.googleapis.com.')
+            return
+        }
+    }
+
     try {
         await window.webgazer.begin()
         console.log('[NeuralAdaptive] WebGazer running')
@@ -71,12 +87,13 @@ async function initWebGazer() {
         console.error('[NeuralAdaptive] WebGazer begin() failed: ' + msg)
         console.error('[NeuralAdaptive] Failure class:', classification)
         console.error('[NeuralAdaptive] Camera permission state at failure:', permissionState)
-        console.error('[NeuralAdaptive] Active FaceMesh path at failure:', window.webgazer.params.faceMeshSolutionPath || '(unset)')
 
         if (classification === 'camera_permission') {
             console.error('[NeuralAdaptive] Camera access was dismissed/blocked. Click the camera icon in the address bar and allow access, then reload.')
         } else if (classification === 'facemesh_asset') {
             console.error('[NeuralAdaptive] Face tracking asset fetch failed. Check Network tab for blocked model/asset requests.')
+        } else if (classification === 'tf_backend') {
+            console.error('[NeuralAdaptive] TF.js backend init failed. Page CSP may block WebAssembly or the TFHub model fetch.')
         } else {
             console.error('[NeuralAdaptive] Unknown begin() failure. Inspect Network + Permissions + Service Worker console.')
         }
@@ -107,6 +124,15 @@ function classifyWebGazerError(err) {
 
     if (message.indexOf('no stream') !== -1) {
         return 'camera_stream'
+    }
+
+    if (
+        message.indexOf('is not a function') !== -1 ||
+        message.indexOf('wasm') !== -1 ||
+        message.indexOf('webgl') !== -1 ||
+        message.indexOf('backend') !== -1
+    ) {
+        return 'tf_backend'
     }
 
     return 'unknown'
