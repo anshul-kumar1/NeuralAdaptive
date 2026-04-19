@@ -38,12 +38,12 @@ You turn on NeuralAdaptive, calibrate once (you look at 9 dots), and then read t
 2. It derives three reading-stress signals from the gaze stream:
    - **Fixation stress** — how long you're fixating in one spot.
    - **Saccade stress** — how disorganized your jumps are (high-velocity micro-saccades).
-   - **Regression stress** — how often you jump *backward* (re-reading).
+   - **Regression stress** — how often you jump _backward_ (re-reading).
 3. A weighted blend (`0.45·fixation + 0.35·saccade + 0.20·regression`) collapses those into a single 0–1 stress score, bucketed every ~600 ms into one of three tiers: `CALM`, `ELEVATED`, `OVERLOAD`.
 4. When the tier or a smoothed "readability struggle" signal crosses thresholds, it applies interventions on the page itself (detail below).
 5. When you click **Finish & Text Summary**, the extension posts the full session — tier timeline, per-paragraph samples, reading pace, tier transitions — to the local `spectrum-server`, which runs a Dedalus/Claude-Haiku tool-calling agent and texts you a short coaching note via iMessage.
 
-Nothing about your gaze, your reading text, or your session telemetry leaves your machine unless *you* configure an LLM key or Photon Spectrum cloud relay. By default, the only network calls are: (a) your own LLM provider for on-page simplify/summarize, and (b) localhost → iMessage via AppleScript.
+Nothing about your gaze, your reading text, or your session telemetry leaves your machine unless _you_ configure an LLM key or Photon Spectrum cloud relay. By default, the only network calls are: (a) your own LLM provider for on-page simplify/summarize, and (b) localhost → iMessage via AppleScript.
 
 ---
 
@@ -69,7 +69,7 @@ Per-frame, `content.js` also computes:
 
 - **Measurement ratio** — how many of the last N frames had a valid face/iris detection. Drops when you look away, cover the camera, or move out of frame.
 - **Reading score** — a heuristic that looks for left-to-right sweeps with short backtracks, i.e. actual reading as opposed to glancing.
-- **Degradation score** — tracker-quality penalty (lighting, jitter, head pose). Interventions are *blocked* when this exceeds a threshold to avoid firing on bad data.
+- **Degradation score** — tracker-quality penalty (lighting, jitter, head pose). Interventions are _blocked_ when this exceeds a threshold to avoid firing on bad data.
 
 ### Stress tiers and intervention gating
 
@@ -80,7 +80,7 @@ tier  = score < 0.3 ? 'CALM'
       :               'OVERLOAD'
 ```
 
-`applyInterventionStable` applies hysteresis (an intervention must be *candidate* for several consecutive frames before it fires) and a gate: it won't fire if `readingScore < INTERVENTION_MIN_READING_SCORE (0.42)`, if the tracker is degraded, or if we're inside a recent-fired cool-down. Every blocked vs fired count feeds the false-trigger-rate metric in the popup.
+`applyInterventionStable` applies hysteresis (an intervention must be _candidate_ for several consecutive frames before it fires) and a gate: it won't fire if `readingScore < INTERVENTION_MIN_READING_SCORE (0.42)`, if the tracker is degraded, or if we're inside a recent-fired cool-down. Every blocked vs fired count feeds the false-trigger-rate metric in the popup.
 
 ### Session aggregation
 
@@ -157,7 +157,7 @@ Every bullet below is a toggle or a responsive behavior that's actually wired up
 - **Dynamic typography (`na-readability-focus`)** — the paragraph you're reading smoothly scales font-size, letter-spacing, word-spacing, and line-height with a smoothed "struggle" score. Per-paragraph, not global. Gated by the **Text Enlarge** toggle.
 - **Tier-ratchet typography (`na-elevated`, `na-overload`)** — once you ratchet into ELEVATED or OVERLOAD, line-height and letter-spacing on the reading container persist until manual reset. Also gated by Text Enlarge.
 - **Screen-border halo (`#na-overload-halo`)** — soft amber inset glow on ELEVATED, pulsing brighter on OVERLOAD. Dismisses itself the moment the AI auto-summary kicks in so feedback doesn't double up.
-- **Dimming surround (`.na-dim-surround`)** — fades every paragraph *except* the current focus while in OVERLOAD.
+- **Dimming surround (`.na-dim-surround`)** — fades every paragraph _except_ the current focus while in OVERLOAD.
 - **Sentence highlight** — brightens only the sentence you're currently on.
 - **AI simplify-on-OVERLOAD** — on sustained OVERLOAD, the paragraph closest to gaze is rewritten at a ~6th-grade level by Dedalus. Badge + **Show original** toggle on every rewrite. Cached per paragraph text.
 - **Long-dwell auto-summarize** — if your gaze rests on the same paragraph for ≥ 10 s, a Gemini-style bullet summary appears in a bottom-right tooltip. Once per paragraph per page load.
@@ -177,14 +177,14 @@ Every bullet below is a toggle or a responsive behavior that's actually wired up
 
 ### Configuration toggles in the popup
 
-| Toggle                      | Storage key             | Default | Effect                                                                |
-| --------------------------- | ----------------------- | ------- | --------------------------------------------------------------------- |
-| Tracking ON/OFF             | `enabled`               | OFF     | Master switch; enables gaze loop + calibration.                       |
-| Reading Progress            | `readingProgress`       | OFF     | Top-of-page progress bar.                                             |
-| Dyslexia Mode               | `dyslexiaMode`          | OFF     | Per-paragraph OpenDyslexic/Lexend preset.                             |
-| Text Enlarge                | `textEnlargeEnabled`    | ON      | Turns off *all* dynamic type scaling and tier-based typography ratchets. |
-| Accuracy mode               | `accuracyMode`          | balanced| `balanced` or `precision`.                                            |
-| Dedalus API key             | `dedalusApiKey`         | —       | Enables AI simplify / summarize / breadcrumb.                         |
+| Toggle           | Storage key          | Default  | Effect                                                                   |
+| ---------------- | -------------------- | -------- | ------------------------------------------------------------------------ |
+| Tracking ON/OFF  | `enabled`            | OFF      | Master switch; enables gaze loop + calibration.                          |
+| Reading Progress | `readingProgress`    | OFF      | Top-of-page progress bar.                                                |
+| Dyslexia Mode    | `dyslexiaMode`       | OFF      | Per-paragraph OpenDyslexic/Lexend preset.                                |
+| Text Enlarge     | `textEnlargeEnabled` | ON       | Turns off _all_ dynamic type scaling and tier-based typography ratchets. |
+| Accuracy mode    | `accuracyMode`       | balanced | `balanced` or `precision`.                                               |
+| Dedalus API key  | `dedalusApiKey`      | —        | Enables AI simplify / summarize / breadcrumb.                            |
 
 Storage is always `chrome.storage.local`. No cloud sync.
 
@@ -226,6 +226,7 @@ No `node_modules/` in the extension root is actually required at runtime — the
 Prereqs: Chrome (or any Chromium with MV3 support, recent Edge works), a working webcam, macOS or Linux for full parity with the companion server (the server's default AppleScript mode is macOS-only; the extension itself is cross-platform).
 
 1. **Clone:**
+
    ```bash
    git clone https://github.com/anshul-kumar1/hackprinceton26.git
    cd hackprinceton26
@@ -272,11 +273,11 @@ You should see:
 
 Set `IMESSAGE_MODE` in `.env`:
 
-| Mode          | Requires                                                                | Notes                                                                               |
-| ------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `applescript` | macOS. One-time "allow Terminal to control Messages" prompt on first send. | **Default.** No Full Disk Access needed.                                            |
-| `local`       | macOS + Full Disk Access granted to your terminal app.                     | Uses `@photon-ai/imessage-kit`.                                                     |
-| `cloud`       | Photon Spectrum project credentials + recipient on your project allowlist. | Routes via Spectrum Cloud. Set `PHOTON_PROJECT_ID` and `PHOTON_PROJECT_SECRET`.     |
+| Mode          | Requires                                                                   | Notes                                                                           |
+| ------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `applescript` | macOS. One-time "allow Terminal to control Messages" prompt on first send. | **Default.** No Full Disk Access needed.                                        |
+| `local`       | macOS + Full Disk Access granted to your terminal app.                     | Uses `@photon-ai/imessage-kit`.                                                 |
+| `cloud`       | Photon Spectrum project credentials + recipient on your project allowlist. | Routes via Spectrum Cloud. Set `PHOTON_PROJECT_ID` and `PHOTON_PROJECT_SECRET`. |
 
 The extension's **Finish & Text Summary** button POSTs to `http://localhost:3847/session-complete`. Confirm the server is reachable with `curl http://localhost:3847/health`.
 
@@ -300,44 +301,44 @@ The extension's **Finish & Text Summary** button POSTs to `http://localhost:3847
 
 ### Chrome storage keys (`chrome.storage.local`)
 
-| Key                             | Type     | Meaning                                                                   |
-| ------------------------------- | -------- | ------------------------------------------------------------------------- |
-| `enabled`                       | boolean  | Master on/off for gaze tracking.                                          |
-| `accuracyMode`                  | string   | `'balanced'` or `'precision'`.                                            |
-| `readingProgress`               | boolean  | Show top-of-page progress bar.                                            |
-| `dyslexiaMode`                  | boolean  | Per-paragraph dyslexia-friendly preset.                                    |
-| `textEnlargeEnabled`            | boolean  | If false, suppresses all dynamic font-size & tier-ratchet typography.      |
-| `dedalusApiKey`                 | string   | Paste from the popup. Needed for AI simplify/summarize/breadcrumb.        |
-| `calibrationVersion`            | string   | Schema tag (`iris_v2`). Bump to force re-calibrate.                        |
-| `calibrationMedianErrorPx`      | number   | Median pixel error from last 9-point calibration.                         |
-| `poseCalibrationVersion`        | string   | Head-pose schema tag (`iris_pose_v1`).                                     |
-| `poseCalibrationQualityScore`   | number   | Pose baseline quality %.                                                   |
+| Key                           | Type    | Meaning                                                               |
+| ----------------------------- | ------- | --------------------------------------------------------------------- |
+| `enabled`                     | boolean | Master on/off for gaze tracking.                                      |
+| `accuracyMode`                | string  | `'balanced'` or `'precision'`.                                        |
+| `readingProgress`             | boolean | Show top-of-page progress bar.                                        |
+| `dyslexiaMode`                | boolean | Per-paragraph dyslexia-friendly preset.                               |
+| `textEnlargeEnabled`          | boolean | If false, suppresses all dynamic font-size & tier-ratchet typography. |
+| `dedalusApiKey`               | string  | Paste from the popup. Needed for AI simplify/summarize/breadcrumb.    |
+| `calibrationVersion`          | string  | Schema tag (`iris_v2`). Bump to force re-calibrate.                   |
+| `calibrationMedianErrorPx`    | number  | Median pixel error from last 9-point calibration.                     |
+| `poseCalibrationVersion`      | string  | Head-pose schema tag (`iris_pose_v1`).                                |
+| `poseCalibrationQualityScore` | number  | Pose baseline quality %.                                              |
 
 ### Spectrum server `.env`
 
-| Variable                | Required              | Default                                        | Purpose                                                  |
-| ----------------------- | --------------------- | ---------------------------------------------- | -------------------------------------------------------- |
-| `IMESSAGE_MODE`         | no                    | `applescript`                                  | `applescript` / `local` / `cloud`.                       |
-| `RECIPIENT_PHONE`       | yes                   | —                                              | Where the session summary iMessage goes.                 |
-| `DEDALUS_API_KEY`       | for agent features    | —                                              | Without it the server sends a stats-only template.       |
-| `DEDALUS_MODEL`         | no                    | `anthropic/claude-haiku-4-5-20251001`          | Any Dedalus-routable model id.                           |
-| `PHOTON_PROJECT_ID`     | only in `cloud` mode  | —                                              | Photon Spectrum project.                                 |
-| `PHOTON_PROJECT_SECRET` | only in `cloud` mode  | —                                              | Photon Spectrum secret.                                  |
-| `PORT`                  | no                    | `3847`                                         | Server listen port (keep in sync with extension).        |
+| Variable                | Required             | Default                               | Purpose                                            |
+| ----------------------- | -------------------- | ------------------------------------- | -------------------------------------------------- |
+| `IMESSAGE_MODE`         | no                   | `applescript`                         | `applescript` / `local` / `cloud`.                 |
+| `RECIPIENT_PHONE`       | yes                  | —                                     | Where the session summary iMessage goes.           |
+| `DEDALUS_API_KEY`       | for agent features   | —                                     | Without it the server sends a stats-only template. |
+| `DEDALUS_MODEL`         | no                   | `anthropic/claude-haiku-4-5-20251001` | Any Dedalus-routable model id.                     |
+| `PHOTON_PROJECT_ID`     | only in `cloud` mode | —                                     | Photon Spectrum project.                           |
+| `PHOTON_PROJECT_SECRET` | only in `cloud` mode | —                                     | Photon Spectrum secret.                            |
+| `PORT`                  | no                   | `3847`                                | Server listen port (keep in sync with extension).  |
 
 ### HTTP endpoints
 
-| Method | Path                | Body                          | Purpose                                                 |
-| ------ | ------------------- | ----------------------------- | ------------------------------------------------------- |
-| `GET`  | `/health`           | —                             | Config snapshot: mode, agent on/off, model, history len.|
-| `POST` | `/session-complete` | session-summary JSON          | Runs the coach agent + delivers the iMessage.           |
+| Method | Path                | Body                 | Purpose                                                  |
+| ------ | ------------------- | -------------------- | -------------------------------------------------------- |
+| `GET`  | `/health`           | —                    | Config snapshot: mode, agent on/off, model, history len. |
+| `POST` | `/session-complete` | session-summary JSON | Runs the coach agent + delivers the iMessage.            |
 
 ---
 
 ## Privacy model
 
-- **Camera frames never leave the machine.** MediaPipe runs locally in an offscreen document. Only the *derived* gaze points (x/y pairs and derived stress scalars) ever flow across the extension's internal message bus.
-- **Page text never leaves the machine** *unless* you've pasted a Dedalus key and triggered an AI simplify / summarize / breadcrumb. In that case, the specific paragraph text being simplified or summarized is sent to the LLM provider you configured.
+- **Camera frames never leave the machine.** MediaPipe runs locally in an offscreen document. Only the _derived_ gaze points (x/y pairs and derived stress scalars) ever flow across the extension's internal message bus.
+- **Page text never leaves the machine** _unless_ you've pasted a Dedalus key and triggered an AI simplify / summarize / breadcrumb. In that case, the specific paragraph text being simplified or summarized is sent to the LLM provider you configured.
 - **Session summaries** are posted to `http://localhost:3847` — never to a third-party host directly from the extension. The companion server, if you enabled the agent, posts those summaries to Dedalus.
 - **iMessage delivery** uses AppleScript by default — the message never traverses an external API; it's injected into the local Messages.app.
 - **No telemetry, analytics, or crash reporters.** This is a hackathon project — there is no home phone to call.
@@ -350,8 +351,8 @@ The extension's **Finish & Text Summary** button POSTs to `http://localhost:3847
 - Webcam gaze tracking, even with Face Mesh + iris refinement + head-pose correction, is fundamentally less precise than a dedicated IR tracker. Expect ~25–60 px median error after a clean 9-point calibration in even lighting.
 - **Lighting matters.** Harsh backlighting, glasses glare, or sub-40-lux ambient will inflate `degradationScore` and NeuralAdaptive will (correctly) refuse to fire interventions until conditions improve.
 - **Head movement matters.** The head-pose baseline assumes you sit roughly where you calibrated. Leaning far forward or turning ≥ 30° off-axis will degrade quality; re-calibrate pose if you've changed setup.
-- The stress tiers are *heuristic*, not medical. They're tuned to what "a reader who's struggling" typically looks like in eye-tracking literature (long fixations, disorganized saccades, backward regressions), but they don't diagnose anything. They just drive soft UI nudges.
-- The AI simplify rewrites are ~6th-grade-target. For highly technical or legal text, always keep **Show original** one click away — the rewrite is a *scaffold*, not a replacement.
+- The stress tiers are _heuristic_, not medical. They're tuned to what "a reader who's struggling" typically looks like in eye-tracking literature (long fixations, disorganized saccades, backward regressions), but they don't diagnose anything. They just drive soft UI nudges.
+- The AI simplify rewrites are ~6th-grade-target. For highly technical or legal text, always keep **Show original** one click away — the rewrite is a _scaffold_, not a replacement.
 
 ---
 
@@ -408,7 +409,3 @@ The agent's toolset is defined in `spectrum-server/server.js` in the `TOOLS` con
 Built at **HackPrinceton 2026** by the team that would like to keep reading.
 
 Typography defaults respectfully borrow from **OpenDyslexic**, **Lexend**, and **Atkinson Hyperlegible** — all open-licensed typefaces; we ship no font binaries, only fallbacks in the system font stack.
-
-Face geometry models under `mediapipe/` and `models/` are Apache-2.0 / BSD-licensed from the upstream MediaPipe and TFJS projects.
-
-No formal LICENSE file has been committed yet — for now, treat the repo as "all rights reserved by the authors" unless/until we add one. Reach out if you want to use pieces of this.
