@@ -29,6 +29,19 @@ var CONFIG = {
     INTERVENTION_MIN_MEAS_RATIO:    0.65,
     INTERVENTION_QUIET_MS:          2200,
     INTERVENTION_CONFIRM_TICKS:     2,
+    // Blended readability boost: stress + disengagement + scroll/wheel churn
+    READABILITY_W_STRESS:           0.22,
+    READABILITY_W_DISENGAGE:        0.28,
+    READABILITY_W_SCROLL:           0.12,
+    READABILITY_SMOOTH_ALPHA:       0.10,
+    READABILITY_WHEEL_WINDOW_MS:    2400,
+    READABILITY_WHEEL_CAP:          900,
+    READABILITY_MEAS_GATE:          0.42,
+    READABILITY_ANCHOR_COOLDOWN_MS: 26000,
+    READABILITY_ANCHOR_SPIKE_LO:    0.36,
+    READABILITY_ANCHOR_SPIKE_HI:    0.58,
+    // Cap visual effect — full struggle still computed but UI stays subtle
+    READABILITY_STRUGGLE_CAP:       0.38,
     KALMAN_MEAS_NOISE_MIN:          15,
     KALMAN_MEAS_NOISE_MAX:          140,
     CAL_QUALITY_MAX_DEGRADATION:    0.65,
@@ -806,11 +819,8 @@ function injectStyles() {
         '.na-overload p { line-height: 2.1 !important; letter-spacing: 0.12em !important; max-width: 66ch !important; transition: all 0.6s ease !important; }',
         '.na-sentence { transition: opacity 0.4s ease; display: inline; }',
 
-        // Dyslexia mode preset: higher readability defaults for dense passages.
-        'html.na-dyslexia-mode p,',
-        'html.na-dyslexia-mode li,',
-        'html.na-dyslexia-mode blockquote,',
-        'html.na-dyslexia-mode dd {',
+        // Dyslexia mode: ONE focused paragraph (.na-dyslexia-focus) — not whole page.
+        'p.na-dyslexia-focus {',
         '  font-family: "OpenDyslexic", "Lexend", "Atkinson Hyperlegible", "Arial", sans-serif !important;',
         '  font-size: 1.08em !important;',
         '  line-height: 1.72 !important;',
@@ -819,26 +829,22 @@ function injectStyles() {
         '  text-rendering: optimizeLegibility !important;',
         '  max-width: 72ch !important;',
         '  color: #121212 !important;',
-        '  background: rgba(253, 247, 233, 0.76) !important;',
+        '  background: rgba(253, 247, 233, 0.88) !important;',
         '  border-radius: 6px !important;',
-        '  padding: 0.1em 0.18em !important;',
-        '}',
-        'html.na-dyslexia-mode p + p,',
-        'html.na-dyslexia-mode li + li {',
-        '  margin-top: 0.55em !important;',
-        '}',
-        'html.na-dyslexia-mode h1,',
-        'html.na-dyslexia-mode h2,',
-        'html.na-dyslexia-mode h3,',
-        'html.na-dyslexia-mode h4 {',
-        '  font-family: "Atkinson Hyperlegible", "Lexend", "Arial", sans-serif !important;',
-        '  letter-spacing: 0.02em !important;',
-        '  line-height: 1.35 !important;',
-        '}',
-        'html.na-dyslexia-mode p,',
-        'html.na-dyslexia-mode li {',
+        '  padding: 0.35em 0.45em !important;',
+        '  box-shadow: 0 2px 14px rgba(0,0,0,0.08) !important;',
         '  hyphens: none !important;',
         '  word-break: normal !important;',
+        '  transition: font-size 0.45s ease, background 0.45s ease !important;',
+        '}',
+
+        // Blended struggle → dynamic type on ONE paragraph (.na-readability-focus, --na-struggle)
+        'p.na-readability-focus {',
+        '  font-size: calc(1em + var(--na-struggle, 0) * 0.22em) !important;',
+        '  letter-spacing: calc(0.012em + var(--na-struggle, 0) * 0.08em) !important;',
+        '  word-spacing: calc(0.04em + var(--na-struggle, 0) * 0.14em) !important;',
+        '  line-height: calc(1.48 + var(--na-struggle, 0) * 0.28) !important;',
+        '  transition: font-size 0.9s ease, letter-spacing 0.9s ease, word-spacing 0.9s ease, line-height 0.9s ease !important;',
         '}',
 
         // ── Inline AI simplification (OVERLOAD tier) ─────────────────────────
@@ -1213,6 +1219,8 @@ function onGazeUpdate(data) {
 
     var score = (signals.fixation * 0.45) + (signals.saccade * 0.35) + (signals.regression * 0.20)
     score = parseFloat(Math.min(Math.max(score, 0), 1.0).toFixed(3))
+
+    updateReadabilityBlend(score, readingScore, measurementRatio, lastHeadMeta.degradationScore)
 
     chrome.runtime.sendMessage({
         type: 'STRESS_SCORE',
@@ -2252,6 +2260,8 @@ async function startNeuralAdaptive(options) {
         if (needCal) await runCalibrationAndValidation(!!options.forceRecalibrate)
 
         isRunning = true
+        bindReadabilityWheel()
+        scheduleReadingFocusLoop()
         startRecoveryModule()
         console.log('[NeuralAdaptive] Tracking enabled')
     } catch (err) {
@@ -2271,6 +2281,9 @@ async function startNeuralAdaptive(options) {
 
 function stopNeuralAdaptive() {
     chrome.runtime.sendMessage({ type: 'STOP_TRACKING' }).catch(function () {})
+
+    unbindReadabilityWheel()
+    clearReadabilityStruggleDom()
 
     DwellGrid.reset()
     GazeCursor.hide()
@@ -2460,6 +2473,211 @@ var PROGRESS_POLL_MS = 500
 var PROGRESS_MIN_PARAGRAPHS = 3
 var dyslexiaModeActive = false
 
+// ── Blended readability (stress + disengagement + wheel churn) ───────────────
+var readabilityWheelSamples = []
+var readabilityWheelBound = false
+var readabilityStruggleSmoothed = 0
+var readabilityStrugglePrev = 0
+var lastReadingFocusEl = null
+var readingFocusTimerId = null
+var lastReadabilityAnchorTs = 0
+
+function pruneReadabilityWheelSamples(now) {
+    var win = CONFIG.READABILITY_WHEEL_WINDOW_MS
+    while (readabilityWheelSamples.length && now - readabilityWheelSamples[0].t > win) {
+        readabilityWheelSamples.shift()
+    }
+}
+
+function getWheelChurn01() {
+    var now = Date.now()
+    pruneReadabilityWheelSamples(now)
+    var sum = 0
+    for (var i = 0; i < readabilityWheelSamples.length; i++) {
+        sum += readabilityWheelSamples[i].dy
+    }
+    var cap = CONFIG.READABILITY_WHEEL_CAP
+    return cap > 0 ? Math.min(1, sum / cap) : 0
+}
+
+function onReadabilityWheel(e) {
+    if (!isRunning || isCalibrating) return
+    var dy = Math.abs(e.deltaY || 0)
+    if (dy < 0.5) return
+    var now = Date.now()
+    pruneReadabilityWheelSamples(now)
+    readabilityWheelSamples.push({ t: now, dy: dy })
+}
+
+function bindReadabilityWheel() {
+    if (readabilityWheelBound) return
+    window.addEventListener('wheel', onReadabilityWheel, { passive: true, capture: true })
+    readabilityWheelBound = true
+}
+
+function unbindReadabilityWheel() {
+    if (!readabilityWheelBound) return
+    window.removeEventListener('wheel', onReadabilityWheel, { passive: true, capture: true })
+    readabilityWheelBound = false
+    readabilityWheelSamples = []
+}
+
+function computeBlendedReadabilityRaw(stressScore, readingScore, measurementRatio, degradationScore) {
+    var disengage = Math.min(1, Math.max(0, 1 - (typeof readingScore === 'number' ? readingScore : 0.5)))
+    var stress = Math.min(1, Math.max(0, typeof stressScore === 'number' ? stressScore : 0))
+    var scroll01 = getWheelChurn01()
+    var raw = CONFIG.READABILITY_W_STRESS * stress +
+        CONFIG.READABILITY_W_DISENGAGE * disengage +
+        CONFIG.READABILITY_W_SCROLL * scroll01
+    raw = Math.min(1, Math.max(0, raw))
+    var mr = typeof measurementRatio === 'number' ? measurementRatio : 1
+    if (mr < CONFIG.READABILITY_MEAS_GATE) {
+        raw *= Math.max(0.25, mr / CONFIG.READABILITY_MEAS_GATE)
+    }
+    var deg = typeof degradationScore === 'number' ? degradationScore : 0
+    if (deg > 0.82) raw *= 0.72
+    return raw
+}
+
+function pickFocusParagraph() {
+    var root = findReadingContent()
+    if (!root) return null
+    var el = null
+    if (smoothedPoint && typeof smoothedPoint.x === 'number') {
+        el = DwellGrid.getParagraphAt(smoothedPoint.x, smoothedPoint.y)
+        if (el && !root.contains(el)) el = null
+    }
+    if (!el && LearningState.lastReadElement && root.contains(LearningState.lastReadElement)) {
+        el = LearningState.lastReadElement
+    }
+    if (!el) {
+        var mid = window.innerHeight / 2
+        var best = null
+        var bestD = Infinity
+        var ps = root.querySelectorAll('p')
+        for (var i = 0; i < ps.length; i++) {
+            var p = ps[i]
+            var t = (p.innerText || '').trim()
+            if (t.length < 15) continue
+            var r = p.getBoundingClientRect()
+            if (r.bottom < -120 || r.top > window.innerHeight + 120) continue
+            var d = Math.abs((r.top + r.bottom) / 2 - mid)
+            if (d < bestD) { bestD = d; best = p }
+        }
+        el = best
+    }
+    return el
+}
+
+function clearReadingFocusPara() {
+    if (lastReadingFocusEl) {
+        try {
+            lastReadingFocusEl.classList.remove('na-readability-focus', 'na-dyslexia-focus')
+            lastReadingFocusEl.style.removeProperty('--na-struggle')
+        } catch (_e) {}
+        lastReadingFocusEl = null
+    }
+}
+
+function applyReadingFocusStyles(cappedStruggle) {
+    injectStyles()
+    var root = findReadingContent()
+    if (!root) {
+        clearReadingFocusPara()
+        return
+    }
+    var para = pickFocusParagraph()
+    if (!para) {
+        clearReadingFocusPara()
+        return
+    }
+    if (lastReadingFocusEl && lastReadingFocusEl !== para) {
+        try {
+            lastReadingFocusEl.classList.remove('na-readability-focus', 'na-dyslexia-focus')
+            lastReadingFocusEl.style.removeProperty('--na-struggle')
+        } catch (_e) {}
+        lastReadingFocusEl = null
+    }
+    lastReadingFocusEl = para
+    if (dyslexiaModeActive) {
+        para.classList.add('na-dyslexia-focus')
+    } else {
+        para.classList.remove('na-dyslexia-focus')
+    }
+    var cap = typeof cappedStruggle === 'number' ? cappedStruggle : 0
+    var showReadability = isRunning && !isCalibrating && cap >= 0.02
+    if (showReadability) {
+        para.classList.add('na-readability-focus')
+        para.style.setProperty(
+            '--na-struggle',
+            Math.min(CONFIG.READABILITY_STRUGGLE_CAP, cap).toFixed(4)
+        )
+    } else {
+        para.classList.remove('na-readability-focus')
+        para.style.removeProperty('--na-struggle')
+    }
+}
+
+function scheduleReadingFocusLoop() {
+    if (readingFocusTimerId) return
+    if (!dyslexiaModeActive && !isRunning) return
+    readingFocusTimerId = setInterval(function () {
+        if (!dyslexiaModeActive && !isRunning) {
+            clearInterval(readingFocusTimerId)
+            readingFocusTimerId = null
+            clearReadingFocusPara()
+            return
+        }
+        var cap = (isRunning && !isCalibrating)
+            ? Math.min(CONFIG.READABILITY_STRUGGLE_CAP, readabilityStruggleSmoothed)
+            : 0
+        applyReadingFocusStyles(cap)
+    }, 420)
+}
+
+function stopReadingFocusLoopIfIdle() {
+    if (readingFocusTimerId && !dyslexiaModeActive && !isRunning) {
+        clearInterval(readingFocusTimerId)
+        readingFocusTimerId = null
+        clearReadingFocusPara()
+    }
+}
+
+function clearReadabilityStruggleDom() {
+    clearReadingFocusPara()
+    if (readingFocusTimerId) {
+        clearInterval(readingFocusTimerId)
+        readingFocusTimerId = null
+    }
+    readabilityStruggleSmoothed = 0
+    readabilityStrugglePrev = 0
+}
+
+function maybeReadabilityAnchorSpike(prevS, nextS) {
+    var now = Date.now()
+    if (now - lastReadabilityAnchorTs < CONFIG.READABILITY_ANCHOR_COOLDOWN_MS) return
+    if (prevS < CONFIG.READABILITY_ANCHOR_SPIKE_LO && nextS >= CONFIG.READABILITY_ANCHOR_SPIKE_HI) {
+        lastReadabilityAnchorTs = now
+        applyVisualAnchor()
+    }
+}
+
+function updateReadabilityBlend(stressScore, readingScore, measurementRatio, degradationScore) {
+    if (!isRunning || isCalibrating) return
+    injectStyles()
+    var raw = computeBlendedReadabilityRaw(stressScore, readingScore, measurementRatio, degradationScore)
+    var a = CONFIG.READABILITY_SMOOTH_ALPHA
+    readabilityStrugglePrev = readabilityStruggleSmoothed
+    readabilityStruggleSmoothed = a * raw + (1 - a) * readabilityStruggleSmoothed
+    readabilityStruggleSmoothed = Math.min(1, Math.max(0, readabilityStruggleSmoothed))
+
+    var capped = Math.min(CONFIG.READABILITY_STRUGGLE_CAP, readabilityStruggleSmoothed)
+    applyReadingFocusStyles(capped)
+    scheduleReadingFocusLoop()
+
+    maybeReadabilityAnchorSpike(readabilityStrugglePrev, readabilityStruggleSmoothed)
+}
+
 function progressCollectParagraphs() {
     var root = findReadingContent()
     if (!root) return null
@@ -2579,9 +2797,19 @@ function setProgressBar(active) {
 function setDyslexiaMode(active) {
     dyslexiaModeActive = !!active
     injectStyles()
-    var root = document.documentElement
-    if (root) root.classList.toggle('na-dyslexia-mode', dyslexiaModeActive)
-    if (document.body) document.body.classList.toggle('na-dyslexia-mode', dyslexiaModeActive)
+    document.documentElement.classList.remove('na-dyslexia-mode')
+    if (document.body) document.body.classList.remove('na-dyslexia-mode')
+    if (dyslexiaModeActive) {
+        var cap = (isRunning && !isCalibrating)
+            ? Math.min(CONFIG.READABILITY_STRUGGLE_CAP, readabilityStruggleSmoothed)
+            : 0
+        applyReadingFocusStyles(cap)
+        scheduleReadingFocusLoop()
+    } else {
+        stopReadingFocusLoopIfIdle()
+        if (!isRunning) clearReadingFocusPara()
+        else applyReadingFocusStyles(Math.min(CONFIG.READABILITY_STRUGGLE_CAP, readabilityStruggleSmoothed))
+    }
     console.log('[NeuralAdaptive] Dyslexia mode:', dyslexiaModeActive ? 'ON' : 'OFF')
 }
 
@@ -2733,6 +2961,37 @@ function buildSessionSummary() {
     }
 
     var durationSeconds = Math.round((now - sessionAgg.startTs) / 1000)
+    // Pace: wordsRead sums every word in paragraphs touched by progress — that
+    // over-counts when scrolling quickly. Cap words to a per-session "budget" at
+    // ~typical sustained reading, then flag when we had to clip (finicky/skimming).
+    var PACE_REF_WPM = 200
+    var PACE_MAX_ABOVE_REF = 50
+    var maxPlausibleWpm = PACE_REF_WPM + PACE_MAX_ABOVE_REF
+    var naiveWpm = durationSeconds >= 8
+        ? Math.round(wordsRead / (durationSeconds / 60))
+        : 0
+    var wordsBudget = Math.max(
+        0,
+        Math.floor((durationSeconds / 60) * maxPlausibleWpm)
+    )
+    var wordsForPace = Math.min(wordsRead, wordsBudget)
+    var credibleWpm = durationSeconds >= 8 && wordsBudget > 0
+        ? Math.round(wordsForPace / (durationSeconds / 60))
+        : 0
+    var paceUnreliable = durationSeconds >= 15 &&
+        (naiveWpm > maxPlausibleWpm || wordsRead > wordsBudget)
+    var readingPace = {
+        referenceWpm: PACE_REF_WPM,
+        maxPlausibleWpm: maxPlausibleWpm,
+        rawWpm: naiveWpm,
+        credibleWpm: credibleWpm,
+        wordsBudget: wordsBudget,
+        wordsCapped: wordsRead > wordsBudget,
+        unreliable: paceUnreliable,
+        note: paceUnreliable
+            ? 'Word count from scrolled paragraphs exceeds what fits typical sustained reading in this time — likely skimming, scrolling, or jumping ahead. Do not praise WPM; use credibleWpm if mentioning pace at all.'
+            : '',
+    }
     var stressTimeline = buildStressTimeline(sessionAgg.scoreHistory, sessionAgg.startTs, now, 15)
     var tierTransitions = sessionAgg.transitions.map(function (t) {
         return {
@@ -2756,6 +3015,7 @@ function buildSessionSummary() {
         paragraphsRead: paragraphsRead,
         paragraphsTotal: paragraphsTotal,
         wordsRead: wordsRead,
+        readingPace: readingPace,
         pageTitle: document.title || '',
         // Rich context for the reading-coach agent on the Spectrum server.
         stressTimeline: stressTimeline,
@@ -3127,6 +3387,12 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
             degradationScore: parseFloat((latestPrecisionLive.degradationScore || 0).toFixed(3)),
             snapDistancePx: parseFloat((latestPrecisionLive.snapDistancePx || 0).toFixed(2)),
             interventionBlocked: !!latestPrecisionLive.interventionBlocked,
+            readabilityStruggle: parseFloat(
+                Math.min(
+                    CONFIG.READABILITY_STRUGGLE_CAP,
+                    readabilityStruggleSmoothed || 0
+                ).toFixed(3)
+            ),
             ts: latestPrecisionLive.ts || 0,
         })
         return

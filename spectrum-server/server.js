@@ -238,6 +238,7 @@ Rules for the final message:
 - Plain text only. No markdown, no quotes, no emojis.
 - 30–70 words total.
 - Do NOT repeat the numeric stats — those are already in the header of the message.
+- If reading pace is flagged unreliable (skimming/scrolling/finicky eye movement), do NOT compliment reading speed or call them a "fast reader." Acknowledge that the pace estimate may reflect moving through the page rather than steady reading.
 
 You MUST call finalize_message to complete the task.`;
 
@@ -283,7 +284,7 @@ const TOOLS = [
     function: {
       name: "compute_reading_pace",
       description:
-        "Compute words-per-minute and return a qualitative rating vs. typical adult reading (~200-250wpm). Returns {wpm, rating}.",
+        "Compute words-per-minute from session data. Returns {wpm, credibleWpm, unreliable, rating}. If unreliable is true, wpm is inflated (skimming/scrolling); use credibleWpm for interpretation and do not praise raw speed.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -309,6 +310,17 @@ const TOOLS = [
 ];
 
 function buildAgentUserContext(p) {
+  const rp = p.readingPace;
+  let paceLine = `- Words in covered paragraphs: ~${p.wordsRead ?? 0} (used for pace math)`;
+  if (rp && typeof rp.rawWpm === "number") {
+    paceLine += `\n- Raw WPM (naive): ${rp.rawWpm}; credible WPM (budget-capped): ${rp.credibleWpm ?? rp.rawWpm}`;
+    paceLine += `\n- Typical sustained band: ~${rp.referenceWpm ?? 200}–${rp.maxPlausibleWpm ?? 250} wpm; above that is usually skimming/scrolling`;
+    paceLine += `\n- Pace unreliable for praise: ${rp.unreliable ? "YES — do not compliment speed" : "no"}`;
+    if (rp.wordsCapped) {
+      paceLine += `\n- Word total was capped to fit session time (scrolled through more text than fits steady reading)`;
+    }
+    if (rp.unreliable && rp.note) paceLine += `\n- Note: ${rp.note}`;
+  }
   const lines = [
     `Session stats to inform your debrief:`,
     `- Duration: ${p.durationSeconds}s`,
@@ -316,7 +328,7 @@ function buildAgentUserContext(p) {
     `- Peak state: ${p.peakTier}`,
     `- Time in CALM / ELEVATED / OVERLOAD: ${(p.tierBreakdown?.calm ?? 0).toFixed(0)}% / ${(p.tierBreakdown?.elevated ?? 0).toFixed(0)}% / ${(p.tierBreakdown?.overload ?? 0).toFixed(0)}%`,
     `- Paragraphs read: ${p.paragraphsRead ?? 0} of ${p.paragraphsTotal ?? "?"}`,
-    `- Words read: ~${p.wordsRead ?? 0}`,
+    paceLine,
     `- Interventions (CSS auto-adjustments) triggered: ${p.interventionCount ?? 0}`,
     `- Article: "${p.pageTitle || "unknown"}"`,
     ``,
@@ -372,14 +384,46 @@ function executeAgentTool(name, args, payload) {
 
     case "compute_reading_pace": {
       const secs = Math.max(1, payload.durationSeconds || 0);
-      const wpm = Math.round((payload.wordsRead || 0) / (secs / 60));
+      const words = payload.wordsRead || 0;
+      const rp = payload.readingPace;
+      const ref = rp?.referenceWpm ?? 200;
+      const maxPlausible = rp?.maxPlausibleWpm ?? ref + 50;
+      const wpm =
+        typeof rp?.rawWpm === "number"
+          ? rp.rawWpm
+          : Math.round(words / (secs / 60));
+      const credibleWpm =
+        typeof rp?.credibleWpm === "number"
+          ? rp.credibleWpm
+          : Math.min(wpm, maxPlausible);
+      const unreliable =
+        !!rp?.unreliable || wpm > maxPlausible || !!rp?.wordsCapped;
       let rating;
-      if (wpm === 0) rating = "no-data";
-      else if (wpm < 120) rating = "slower than typical (reflective pace)";
-      else if (wpm < 220) rating = "typical adult reading pace";
-      else if (wpm < 320) rating = "fast reader";
-      else rating = "skimming or rushed";
-      return { wpm, rating, wordsRead: payload.wordsRead || 0, durationSeconds: secs };
+      if (wpm === 0 && credibleWpm === 0) rating = "no-data";
+      else if (unreliable) {
+        rating =
+          "unreliable (skimming/scrolling — use credibleWpm only; do not praise speed)";
+      } else if (credibleWpm < 120) {
+        rating = "slower than typical (reflective pace)";
+      } else if (credibleWpm <= maxPlausible) {
+        rating = "within typical sustained reading range";
+      } else {
+        rating = "skimming or rushed";
+      }
+      return {
+        wpm,
+        credibleWpm,
+        unreliable,
+        referenceWpm: ref,
+        maxPlausibleWpm: maxPlausible,
+        rating,
+        wordsRead: words,
+        durationSeconds: secs,
+        wordsCapped: !!rp?.wordsCapped,
+        note: unreliable
+          ? "Do not praise WPM; naive total can reflect scrolling through paragraphs."
+          : undefined,
+      };
     }
 
     default:
