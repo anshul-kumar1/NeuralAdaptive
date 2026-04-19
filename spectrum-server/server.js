@@ -18,7 +18,7 @@ import cors from "cors";
 import { Spectrum } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { IMessageSDK } from "@photon-ai/imessage-kit";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { execFile } from "child_process";
@@ -69,6 +69,106 @@ const DEDALUS_API_URL = "https://api.dedaluslabs.ai/v1/chat/completions";
 const CLAUDE_MODEL =
   process.env.DEDALUS_MODEL || "anthropic/claude-haiku-4-5-20251001";
 const AGENT_MAX_STEPS = 6;
+
+// ─── Rolling session history (for longitudinal coaching) ─────────────────────
+// Persists a compact summary of each completed session on disk so the
+// reading-coach agent can reference prior sessions ("third session this week
+// where dense technical text hit you hardest", "mornings go smoother than
+// evenings", etc.). File is gitignored; only a rolling window is kept.
+const HISTORY_PATH = join(__dirname, "sessions-history.json");
+const HISTORY_CAP = 20;          // retain last 20 total
+const HISTORY_AGENT_WINDOW = 5;  // pass last 5 into the agent's context
+
+function loadSessionHistory() {
+  if (!existsSync(HISTORY_PATH)) return [];
+  try {
+    const raw = readFileSync(HISTORY_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch (err) {
+    console.warn(
+      `[spectrum-server] Could not parse ${HISTORY_PATH}: ${err.message}`
+    );
+    return [];
+  }
+}
+
+function persistSessionHistory(entries) {
+  try {
+    writeFileSync(HISTORY_PATH, JSON.stringify(entries, null, 2), "utf8");
+  } catch (err) {
+    console.warn(
+      `[spectrum-server] Could not write ${HISTORY_PATH}: ${err.message}`
+    );
+  }
+}
+
+function buildHistoryEntry(payload, coachBlurb) {
+  const now = new Date();
+  const hour = now.getHours();
+  let timeOfDay;
+  if (hour < 5) timeOfDay = "late-night";
+  else if (hour < 12) timeOfDay = "morning";
+  else if (hour < 17) timeOfDay = "afternoon";
+  else if (hour < 21) timeOfDay = "evening";
+  else timeOfDay = "night";
+  const rp = payload.readingPace || {};
+  return {
+    ts: now.toISOString(),
+    localHour: hour,
+    dayOfWeek: now.toLocaleDateString("en-US", { weekday: "short" }),
+    timeOfDay,
+    sessionType: payload.sessionType || "reading",
+    durationSeconds: payload.durationSeconds || 0,
+    averageScore: payload.averageScore ?? null,
+    peakTier: payload.peakTier || "CALM",
+    tierBreakdown: payload.tierBreakdown || null,
+    paragraphsRead: payload.paragraphsRead || 0,
+    paragraphsTotal: payload.paragraphsTotal || 0,
+    wordsRead: payload.wordsRead || 0,
+    interventionCount: payload.interventionCount || 0,
+    pageTitle: payload.pageTitle || "",
+    credibleWpm: rp.credibleWpm ?? null,
+    rawWpm: rp.rawWpm ?? null,
+    paceUnreliable: !!rp.unreliable,
+    coachBlurb: coachBlurb || null,
+  };
+}
+
+function appendSessionHistory(entry) {
+  const history = loadSessionHistory();
+  history.push(entry);
+  while (history.length > HISTORY_CAP) history.shift();
+  persistSessionHistory(history);
+  return history;
+}
+
+function getRecentHistoryForAgent() {
+  const history = loadSessionHistory();
+  return history.slice(-HISTORY_AGENT_WINDOW);
+}
+
+function formatHistoryForAgent(history) {
+  if (!history || history.length === 0) return "";
+  const lines = history.map((h, i) => {
+    const age = history.length - i;
+    const pct =
+      h.tierBreakdown
+        ? `${Math.round(h.tierBreakdown.calm)}/${Math.round(
+            h.tierBreakdown.elevated
+          )}/${Math.round(h.tierBreakdown.overload)}`
+        : "?/?/?";
+    const pace = h.credibleWpm
+      ? `${h.credibleWpm}wpm${h.paceUnreliable ? "~" : ""}`
+      : "?";
+    const blurb = h.coachBlurb
+      ? ` | prior coach: "${h.coachBlurb.replace(/"/g, "'").slice(0, 120)}"`
+      : "";
+    return `${age} session(s) ago [${h.dayOfWeek} ${h.timeOfDay}] ${h.durationSeconds}s, avg ${(h.averageScore * 100).toFixed(0)}%, peak ${h.peakTier}, CALM/ELEV/OVER ${pct}%, ${pace}, "${(h.pageTitle || "untitled").slice(0, 40)}"${blurb}`;
+  });
+  return lines.join("\n");
+}
 
 // ─── Validate config ──────────────────────────────────────────────────────────
 function validateConfig() {
@@ -217,21 +317,23 @@ function formatStatsBlock(payload) {
 // tier transitions). It terminates by calling finalize_message(message),
 // which becomes the personalized debrief we append to the iMessage.
 
-const AGENT_SYSTEM_PROMPT = `You are a reading-focus coach for a student using the NeuralAdaptive reading extension. The student has ADHD/dyslexia and just finished a reading session. You need to write a short, personal debrief that will be delivered to them via iMessage.
+const AGENT_SYSTEM_PROMPT = `You are a longitudinal reading-focus coach for a student using the NeuralAdaptive reading extension. The student has ADHD/dyslexia and just finished a reading session. You need to write a short, personal debrief that will be delivered to them via iMessage.
 
-You have tools that let you investigate the session data:
-- get_stress_timeline() — 15 time-bins showing how focused vs. stressed they were throughout the session
-- get_paragraph_text(index) — retrieve the text of a specific paragraph they read
-- get_tier_transitions() — moments when their focus state changed (CALM ↔ ELEVATED ↔ OVERLOAD)
-- compute_reading_pace() — their words-per-minute + qualitative comparison
+You have tools that let you investigate the session data AND the student's recent history:
+- get_stress_timeline() — 15 time-bins showing how focused vs. stressed they were throughout this session
+- get_paragraph_text(index) — retrieve the text of a specific paragraph they read in this session
+- get_tier_transitions() — moments when their focus state changed (CALM ↔ ELEVATED ↔ OVERLOAD) this session
+- compute_reading_pace() — their words-per-minute + qualitative comparison for this session
+- get_recent_sessions() — the last few completed sessions (up to 5). Use this to spot longitudinal patterns: time-of-day effects, repeated struggles with a topic, streaks of good focus, etc.
 
 Workflow:
-1. Look at the initial stats in the user message.
-2. Call 1–3 tools to understand WHY the session went the way it did. Example: if they hit OVERLOAD, find when it happened via get_stress_timeline(), then pull the paragraph text around that time via get_paragraph_text() to see what tripped them up.
+1. Read the initial stats AND the recent history block in the user message.
+2. Call 1–3 tools to understand WHY this session went the way it did. If recent history is available and relevant, lean on get_recent_sessions() to find cross-session patterns (e.g. "third evening session in a row with elevated overload" or "mornings consistently calmer than evenings").
 3. Call finalize_message(message) with a 2–4 sentence personalized debrief.
 
 Rules for the final message:
 - Warm but direct. Like a real coach, not a chatbot.
+- When a clear longitudinal pattern exists across the recent sessions, name it explicitly ("third session this week where long technical paragraphs spiked you", "mornings keep going smoother than evenings"). Only do this when the pattern is real — at least 2 supporting sessions. Do not invent patterns if history is empty or mixed.
 - Reference SPECIFIC content or specific moments — don't just say "good job." Mention the topic, a concept, or when things got hard.
 - If they struggled, acknowledge it without being patronizing. If they crushed it, say so plainly.
 - At most ONE concrete suggestion (e.g. "worth revisiting the section on X when you're fresh").
@@ -291,6 +393,15 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_recent_sessions",
+      description:
+        "Return the student's most recent completed sessions (up to 5, oldest first). Each entry has {ts, dayOfWeek, timeOfDay, durationSeconds, averageScore, peakTier, tierBreakdown, paragraphsRead, wordsRead, credibleWpm, paceUnreliable, pageTitle, coachBlurb}. Use this to detect longitudinal patterns: time-of-day effects, recurring struggles with certain topics, streaks, etc. Empty array means this is effectively the first session.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "finalize_message",
       description:
         "Produce the final coach debrief. Call this once you understand the session. This terminates the agent loop.",
@@ -309,7 +420,7 @@ const TOOLS = [
   },
 ];
 
-function buildAgentUserContext(p) {
+function buildAgentUserContext(p, recentHistory) {
   const rp = p.readingPace;
   let paceLine = `- Words in covered paragraphs: ~${p.wordsRead ?? 0} (used for pace math)`;
   if (rp && typeof rp.rawWpm === "number") {
@@ -321,8 +432,21 @@ function buildAgentUserContext(p) {
     }
     if (rp.unreliable && rp.note) paceLine += `\n- Note: ${rp.note}`;
   }
+  const now = new Date();
+  const timeOfDayLabel =
+    now.getHours() < 5
+      ? "late-night"
+      : now.getHours() < 12
+      ? "morning"
+      : now.getHours() < 17
+      ? "afternoon"
+      : now.getHours() < 21
+      ? "evening"
+      : "night";
   const lines = [
-    `Session stats to inform your debrief:`,
+    `This session (just finished, ${now.toLocaleDateString("en-US", {
+      weekday: "short",
+    })} ${timeOfDayLabel}):`,
     `- Duration: ${p.durationSeconds}s`,
     `- Average stress score: ${(p.averageScore * 100).toFixed(0)}% (0=calm, 100=overloaded)`,
     `- Peak state: ${p.peakTier}`,
@@ -331,17 +455,40 @@ function buildAgentUserContext(p) {
     paceLine,
     `- Interventions (CSS auto-adjustments) triggered: ${p.interventionCount ?? 0}`,
     `- Article: "${p.pageTitle || "unknown"}"`,
-    ``,
-    `Investigate with tools, then call finalize_message.`,
   ];
+  if (recentHistory && recentHistory.length > 0) {
+    lines.push("");
+    lines.push(
+      `Recent session history (oldest first, ${recentHistory.length} entr${
+        recentHistory.length === 1 ? "y" : "ies"
+      } — use to spot patterns):`
+    );
+    lines.push(formatHistoryForAgent(recentHistory));
+  } else {
+    lines.push("");
+    lines.push(
+      "Recent session history: none yet (this is effectively the first tracked session). Do NOT invent longitudinal patterns."
+    );
+  }
+  lines.push("");
+  lines.push(
+    "Investigate with tools (including get_recent_sessions when a pattern might exist), then call finalize_message."
+  );
   return lines.join("\n");
 }
 
 // Dispatcher — each tool reads from the payload that was shipped with the
 // session webhook. The agent never touches live DOM; the extension already
 // packed everything it needs.
-function executeAgentTool(name, args, payload) {
+function executeAgentTool(name, args, payload, recentHistory) {
   switch (name) {
+    case "get_recent_sessions": {
+      if (!recentHistory || recentHistory.length === 0) {
+        return { sessions: [], count: 0, note: "No prior sessions recorded." };
+      }
+      return { sessions: recentHistory, count: recentHistory.length };
+    }
+
     case "get_stress_timeline": {
       const tl = payload.stressTimeline || [];
       if (tl.length === 0) {
@@ -449,14 +596,17 @@ async function callDedalus(body) {
   return await res.json();
 }
 
-async function runReadingCoachAgent(payload) {
+async function runReadingCoachAgent(payload, recentHistory) {
   if (!DEDALUS_API_KEY) {
     throw new Error("DEDALUS_API_KEY not configured");
   }
 
   const messages = [
     { role: "system", content: AGENT_SYSTEM_PROMPT },
-    { role: "user", content: buildAgentUserContext(payload) },
+    {
+      role: "user",
+      content: buildAgentUserContext(payload, recentHistory),
+    },
   ];
 
   const toolTrace = [];
@@ -508,7 +658,12 @@ async function runReadingCoachAgent(payload) {
         return { message: finalText, toolTrace, steps: step + 1, finalized: true };
       }
 
-      const result = executeAgentTool(tc.function?.name, parsedArgs, payload);
+      const result = executeAgentTool(
+        tc.function?.name,
+        parsedArgs,
+        payload,
+        recentHistory
+      );
       toolTrace.push({ tool: tc.function?.name, args: parsedArgs, result });
 
       // Tool result must be a string under OpenAI-compat tool protocol.
@@ -530,12 +685,20 @@ async function runReadingCoachAgent(payload) {
 // Compose the full iMessage: stats header + (agent coach blurb OR nothing).
 async function composeIMessage(payload) {
   const stats = formatStatsBlock(payload);
+  const recentHistory = getRecentHistoryForAgent();
   let coachBlurb = null;
-  let agentInfo = { ok: false, error: null, steps: 0, finalized: false, toolTrace: [] };
+  let agentInfo = {
+    ok: false,
+    error: null,
+    steps: 0,
+    finalized: false,
+    toolTrace: [],
+    historyCount: recentHistory.length,
+  };
 
   try {
-    const agentRes = await runReadingCoachAgent(payload);
-    agentInfo = { ok: true, ...agentRes };
+    const agentRes = await runReadingCoachAgent(payload, recentHistory);
+    agentInfo = { ok: true, historyCount: recentHistory.length, ...agentRes };
     if (agentRes.message && agentRes.message.length >= 20) {
       coachBlurb = agentRes.message;
     }
@@ -550,7 +713,7 @@ async function composeIMessage(payload) {
   }
   message += `\n— Sent by NeuralAdaptive`;
 
-  return { message, agentInfo };
+  return { message, agentInfo, coachBlurb };
 }
 
 // ─── Send via Spectrum ────────────────────────────────────────────────────────
@@ -605,6 +768,8 @@ expressApp.get("/health", (_req, res) => {
     configured: cloudReady && Boolean(RECIPIENT_PHONE),
     agent: Boolean(DEDALUS_API_KEY),
     model: CLAUDE_MODEL,
+    historyCount: loadSessionHistory().length,
+    historyWindow: HISTORY_AGENT_WINDOW,
   });
 });
 
@@ -620,15 +785,28 @@ expressApp.post("/session-complete", async (req, res) => {
   );
 
   try {
-    const { message, agentInfo } = await composeIMessage(payload);
+    const { message, agentInfo, coachBlurb } = await composeIMessage(payload);
 
     if (agentInfo.ok) {
       console.log(
-        `[spectrum-server] agent: ${agentInfo.steps} steps, finalized=${agentInfo.finalized}, tools=${agentInfo.toolTrace.map((t) => t.tool).join(",")}`
+        `[spectrum-server] agent: ${agentInfo.steps} steps, finalized=${agentInfo.finalized}, history=${agentInfo.historyCount}, tools=${agentInfo.toolTrace.map((t) => t.tool).join(",")}`
       );
     }
 
     await sendIMessage(message);
+
+    // Append to rolling history only after a successful send so failed
+    // deliveries don't pollute the agent's longitudinal context.
+    try {
+      const history = appendSessionHistory(buildHistoryEntry(payload, coachBlurb));
+      console.log(
+        `[spectrum-server] history updated: ${history.length} total session(s) on record.`
+      );
+    } catch (err) {
+      console.warn(
+        `[spectrum-server] history append failed: ${err.message}`
+      );
+    }
 
     res.json({ ok: true, message, agent: agentInfo });
   } catch (err) {
@@ -650,5 +828,9 @@ expressApp.listen(PORT, () => {
   console.log(`[spectrum-server] Recipient set: ${Boolean(RECIPIENT_PHONE)}`);
   console.log(
     `[spectrum-server] Reading-coach agent: ${Boolean(DEDALUS_API_KEY) ? "enabled" : "disabled (no DEDALUS_API_KEY)"} (${CLAUDE_MODEL})`
+  );
+  const existingHistory = loadSessionHistory();
+  console.log(
+    `[spectrum-server] Session history: ${existingHistory.length} record(s) on disk; agent gets last ${HISTORY_AGENT_WINDOW}.`
   );
 });

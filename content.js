@@ -847,6 +847,36 @@ function injectStyles() {
         '  transition: font-size 0.9s ease, letter-spacing 0.9s ease, word-spacing 0.9s ease, line-height 0.9s ease !important;',
         '}',
 
+        // ── OVERLOAD screen-border halo ──────────────────────────────────────
+        // Full-viewport, pointer-events:none overlay that pulses while the
+        // current reading tier is OVERLOAD. Lets the student see "you just
+        // spiked" without needing to look at any specific UI.
+        '#na-overload-halo {',
+        '  position: fixed !important;',
+        '  inset: 0 !important;',
+        '  pointer-events: none !important;',
+        '  z-index: 2147483643 !important;',
+        '  opacity: 0;',
+        '  background: transparent;',
+        '  box-shadow: inset 0 0 70px 14px rgba(231, 117, 0, 0.30);',
+        '  transition: opacity 0.45s ease;',
+        '}',
+        '#na-overload-halo.na-halo-elevated {',
+        '  opacity: 1;',
+        '  box-shadow: inset 0 0 60px 10px rgba(231, 117, 0, 0.22);',
+        '}',
+        '#na-overload-halo.na-halo-overload {',
+        '  opacity: 1;',
+        '  animation: na-halo-pulse 2.2s ease-in-out infinite;',
+        '}',
+        '@keyframes na-halo-pulse {',
+        '  0%, 100% { box-shadow: inset 0 0 80px 18px rgba(231, 117, 0, 0.55); }',
+        '  50%      { box-shadow: inset 0 0 130px 32px rgba(231, 117, 0, 0.80); }',
+        '}',
+        '@media (prefers-reduced-motion: reduce) {',
+        '  #na-overload-halo.na-halo-overload { animation: none; box-shadow: inset 0 0 90px 22px rgba(231, 117, 0, 0.65); }',
+        '}',
+
         // ── Inline AI simplification (OVERLOAD tier) ─────────────────────────
         '.na-dim-surround p:not(.na-simplified) { opacity: 0.35 !important; filter: blur(0.3px); transition: opacity 0.6s ease, filter 0.6s ease !important; }',
         'p.na-simplified {',
@@ -2158,6 +2188,7 @@ function startRecoveryModule() {
     lkcIntervalId = setInterval(function () {
         if (!isRunning || isCalibrating || LearningState.isDistracted) return
         updateLKC()
+        checkLongDwellAutoSummarize()
         // Keep a rolling text history for the breadcrumb context
         var snap = getViewportText()
         if (snap) {
@@ -2208,6 +2239,7 @@ function stopRecoveryModule() {
     LearningState.isDistracted    = false
     LearningState.distractionStart = null
     LearningState.level            = 0
+    resetAutoSummarizeTracking()
     hidePeripheralMovement()
     hideBreadcrumbToast()
 }
@@ -2320,6 +2352,28 @@ function clearAllInterventions() {
     document.querySelectorAll('.na-sentence').forEach(function (span) {
         span.style.opacity = ''
     })
+    setOverloadHalo('CALM')
+}
+
+// Full-viewport halo that pulses at the edges while the user's current tier
+// is elevated or overloaded. Creates the overlay lazily and removes it on CALM.
+function setOverloadHalo(tier) {
+    if (tier !== 'OVERLOAD' && tier !== 'ELEVATED') {
+        var existing = document.getElementById('na-overload-halo')
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
+        return
+    }
+    injectStyles()
+    var halo = document.getElementById('na-overload-halo')
+    if (!halo) {
+        halo = document.createElement('div')
+        halo.id = 'na-overload-halo'
+        halo.setAttribute('aria-hidden', 'true')
+        ;(document.body || document.documentElement).appendChild(halo)
+    }
+    halo.classList.remove('na-halo-elevated', 'na-halo-overload')
+    if (tier === 'OVERLOAD') halo.classList.add('na-halo-overload')
+    else halo.classList.add('na-halo-elevated')
 }
 
 // Dwell callback â€” fires when gaze stays in one grid sector for DWELL_THRESHOLD_MS
@@ -2605,7 +2659,7 @@ function applyReadingFocusStyles(cappedStruggle) {
         para.classList.remove('na-dyslexia-focus')
     }
     var cap = typeof cappedStruggle === 'number' ? cappedStruggle : 0
-    var showReadability = isRunning && !isCalibrating && cap >= 0.02
+    var showReadability = isRunning && !isCalibrating && cap >= 0.02 && textEnlargeEnabled
     if (showReadability) {
         para.classList.add('na-readability-focus')
         para.style.setProperty(
@@ -2817,6 +2871,97 @@ var TIER_RANK = { CALM: 0, ELEVATED: 1, OVERLOAD: 2 }
 var TIER_NAMES = ['CALM', 'ELEVATED', 'OVERLOAD']
 var maxTypographyTier = 'CALM'
 
+// When OFF, the dynamic per-paragraph font-size scaling and the tier-based
+// typography ratchets (na-elevated, na-overload) are suppressed. Other
+// interventions (dimming, halo, sentence highlight, AI simplify, tooltip,
+// dyslexia mode) are unaffected. Defaults to ON for back-compat.
+var textEnlargeEnabled = true
+
+function setTextEnlarge(active) {
+    textEnlargeEnabled = !!active
+    if (!textEnlargeEnabled) {
+        // Strip any existing enlargement the user can currently see.
+        document.querySelectorAll('.na-elevated, .na-overload').forEach(function (el) {
+            el.classList.remove('na-elevated', 'na-overload')
+        })
+        document.querySelectorAll('.na-readability-focus').forEach(function (el) {
+            el.classList.remove('na-readability-focus')
+            el.style.removeProperty('--na-struggle')
+        })
+        maxTypographyTier = 'CALM'
+    } else {
+        // Re-apply based on current state, so turning it back on is immediate.
+        var el = findReadingContent && findReadingContent()
+        if (el) {
+            if (currentTier === 'ELEVATED') el.classList.add('na-elevated')
+            else if (currentTier === 'OVERLOAD') el.classList.add('na-overload')
+        }
+        if (isRunning) applyReadingFocusStyles(Math.min(CONFIG.READABILITY_STRUGGLE_CAP, readabilityStruggleSmoothed))
+    }
+    console.log('[NeuralAdaptive] Text enlarge:', textEnlargeEnabled ? 'ON' : 'OFF')
+}
+
+// ── Long-dwell auto-summarize ────────────────────────────────────────────────
+// If the user's gaze rests on the same paragraph for more than
+// AUTO_SUMMARIZE_DWELL_MS without progressing, fire a Gemini summary and show
+// the tooltip. Each paragraph can only auto-summarize once per page load.
+var AUTO_SUMMARIZE_DWELL_MS = 10000
+var autoSummarizeCurrentEl = null
+var autoSummarizeStartTs = 0
+var autoSummarizeInFlight = false
+var autoSummarizedParas = new WeakSet()
+
+function resetAutoSummarizeTracking() {
+    autoSummarizeCurrentEl = null
+    autoSummarizeStartTs = 0
+    autoSummarizeInFlight = false
+}
+
+function checkLongDwellAutoSummarize() {
+    if (!isRunning || isCalibrating) return
+    if (LearningState.isDistracted) { resetAutoSummarizeTracking(); return }
+
+    var el = LearningState.lastReadElement
+    if (!el || !el.isConnected) { resetAutoSummarizeTracking(); return }
+
+    // Only paragraphs with enough substance to be worth summarizing.
+    var text = (el.innerText || el.textContent || '').trim()
+    if (text.length < 120) { resetAutoSummarizeTracking(); return }
+
+    var now = Date.now()
+    if (el !== autoSummarizeCurrentEl) {
+        autoSummarizeCurrentEl = el
+        autoSummarizeStartTs = now
+        autoSummarizeInFlight = false
+        return
+    }
+    if (autoSummarizeInFlight) return
+    if (autoSummarizedParas.has(el)) return
+    if (now - autoSummarizeStartTs < AUTO_SUMMARIZE_DWELL_MS) return
+
+    autoSummarizeInFlight = true
+    var snippet = text.slice(0, 800)
+    chrome.runtime.sendMessage({
+        type: 'SUMMARIZE_PARAGRAPH',
+        text: snippet,
+    }, function (response) {
+        autoSummarizeInFlight = false
+        if (chrome.runtime.lastError) {
+            console.warn('[NeuralAdaptive] auto-summarize transport failed:', chrome.runtime.lastError.message)
+            return
+        }
+        if (!response || response.error) {
+            console.warn('[NeuralAdaptive] auto-summarize failed:', response && response.error)
+            return
+        }
+        if (!response.summary) return
+        // If gaze has moved to a different paragraph in the meantime, still
+        // show the summary — the dwell earned it.
+        autoSummarizedParas.add(el)
+        renderTooltip(response.summary)
+    })
+}
+
 // ── Session aggregation for the Spectrum companion iMessage ──────────────────
 // Samples stress score + tier on every STRESS_SCORE dispatch (~600ms). Keeps
 // running average, peak tier, time-in-tier durations, a capped timestamped
@@ -3027,12 +3172,14 @@ function buildSessionSummary() {
 function applyIntervention(tier, isReading) {
     if (tier === currentTier) return
     currentTier = tier
+    setOverloadHalo(tier)
     var el = findReadingContent()
     if (!el) return
 
     // Typography ratchets: once we reach ELEVATED or OVERLOAD, the class stays
     // on the container even when stress drops. Only a manual reset clears it.
-    if (TIER_RANK[tier] > TIER_RANK[maxTypographyTier]) {
+    // Gated by the Text Enlarge toggle — when off, these classes never land.
+    if (textEnlargeEnabled && TIER_RANK[tier] > TIER_RANK[maxTypographyTier]) {
         maxTypographyTier = tier
         el.classList.remove('na-elevated', 'na-overload')
         if (tier === 'ELEVATED') el.classList.add('na-elevated')
@@ -3064,6 +3211,7 @@ function resetTypography() {
     document.querySelectorAll('.na-elevated, .na-overload, .na-dim-surround').forEach(function (el) {
         el.classList.remove('na-elevated', 'na-overload', 'na-dim-surround')
     })
+    setOverloadHalo('CALM')
 }
 
 function findReadingContent() {
@@ -3208,6 +3356,10 @@ function triggerReadingAgent(contentEl) {
     var closestP = pickGazeParagraph(contentEl)
     if (!closestP) return
     if (pendingSimplification.has(closestP)) return
+
+    // Dismiss the OVERLOAD border halo once we're taking action — the AI
+    // summary/simplify is the feedback, no need to also pulse the edges.
+    setOverloadHalo('CALM')
 
     var original = closestP.innerText.trim()
     var cacheKey = original.slice(0, MAX_SIMPLIFY_CHARS)
@@ -3365,6 +3517,7 @@ chrome.storage.onChanged.addListener(function (changes, areaName) {
     if (changes.na_flags) activeFlags = mergeFlags(changes.na_flags.newValue)
     if (changes.readingProgress) setProgressBar(!!changes.readingProgress.newValue)
     if (changes.dyslexiaMode) setDyslexiaMode(!!changes.dyslexiaMode.newValue)
+    if (changes.textEnlargeEnabled) setTextEnlarge(changes.textEnlargeEnabled.newValue !== false)
 })
 
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
@@ -3418,6 +3571,12 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     if (message.type === 'NA_SET_DYSLEXIA_MODE') {
         setDyslexiaMode(!!message.dyslexiaMode)
         sendResponse({ ok: true, dyslexiaMode: dyslexiaModeActive })
+        return
+    }
+
+    if (message.type === 'NA_SET_TEXT_ENLARGE') {
+        setTextEnlarge(message.textEnlargeEnabled !== false)
+        sendResponse({ ok: true, textEnlargeEnabled: textEnlargeEnabled })
         return
     }
 
@@ -3567,7 +3726,7 @@ document.addEventListener('na-tracking-error', function (e) {
 // (when the UI is on) and the "paragraphs read" metric in the session summary.
 if (!progressLoopTimer) progressTick()
 
-chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgress', 'dyslexiaMode'], function (data) {
+chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgress', 'dyslexiaMode', 'textEnlargeEnabled'], function (data) {
     if (chrome.runtime.lastError) {
         console.warn('[NeuralAdaptive] storage unavailable in this frame:', chrome.runtime.lastError.message)
         return
@@ -3578,6 +3737,7 @@ chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgres
         startProgressBar()
     }
     setDyslexiaMode(!!(data && data.dyslexiaMode))
+    setTextEnlarge(!data || data.textEnlargeEnabled !== false)
     var enabled = !!(data && data.enabled)
     if (!enabled) {
         console.log('[NeuralAdaptive] Disabled by default. Use popup to enable.')

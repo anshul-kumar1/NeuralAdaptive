@@ -106,6 +106,23 @@ h1 {
   border-color: #2f81f7;
 }
 
+/* Text Enlarge — teal accent; disables dynamic type scaling when off */
+.focus.enlarge {
+  border-color: rgba(86, 211, 194, 0.45);
+  background: rgba(86, 211, 194, 0.08);
+  color: #56d3c2;
+}
+
+.focus.enlarge:hover {
+  background: rgba(86, 211, 194, 0.16);
+}
+
+.focus.enlarge.enabled {
+  background: linear-gradient(90deg, #2ea5a8 0%, #56d3c2 100%);
+  color: #0d1117;
+  border-color: #2ea5a8;
+}
+
 /* Finish Session — sends the iMessage summary via the Spectrum server */
 .finish {
   width: 100%;

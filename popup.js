@@ -1,6 +1,7 @@
 var toggleBtn = document.getElementById('toggleBtn')
 var progressBarBtn = document.getElementById('progressBarBtn')
 var dyslexiaModeBtn = document.getElementById('dyslexiaModeBtn')
+var textEnlargeBtn = document.getElementById('textEnlargeBtn')
 var finishSessionBtn = document.getElementById('finishSessionBtn')
 var statusText = document.getElementById('statusText')
 var recalibrateBtn = document.getElementById('recalibrateBtn')
@@ -53,6 +54,13 @@ function renderDyslexiaMode(active) {
     dyslexiaModeBtn.textContent = active ? 'Dyslexia Mode: ON' : 'Dyslexia Mode: OFF'
     dyslexiaModeBtn.classList.toggle('enabled', active)
     dyslexiaModeBtn.setAttribute('aria-pressed', active ? 'true' : 'false')
+}
+
+function renderTextEnlarge(active) {
+    if (!textEnlargeBtn) return
+    textEnlargeBtn.textContent = active ? 'Text Enlarge: ON' : 'Text Enlarge: OFF'
+    textEnlargeBtn.classList.toggle('enabled', active)
+    textEnlargeBtn.setAttribute('aria-pressed', active ? 'true' : 'false')
 }
 
 function renderCalibration(data) {
@@ -155,15 +163,17 @@ function pollMetrics() {
 }
 
 function readState() {
-    chrome.storage.local.get(['enabled', 'accuracyMode', 'calibrationMedianErrorPx', 'poseCalibrationQualityScore', 'readingProgress', 'dyslexiaMode', 'dedalusApiKey'], function (data) {
+    chrome.storage.local.get(['enabled', 'accuracyMode', 'calibrationMedianErrorPx', 'poseCalibrationQualityScore', 'readingProgress', 'dyslexiaMode', 'dedalusApiKey', 'textEnlargeEnabled'], function (data) {
         var enabled = !!(data && data.enabled)
         var mode = data && data.accuracyMode ? data.accuracyMode : 'balanced'
         var hasDedalus = !!(data && typeof data.dedalusApiKey === 'string' && data.dedalusApiKey.length > 0)
+        var textEnlarge = !data || data.textEnlargeEnabled !== false
         renderDedalusKeyStatus(hasDedalus)
         if (dedalusApiKeyInput) dedalusApiKeyInput.value = ''
         renderEnabled(enabled)
         renderProgressBar(!!(data && data.readingProgress))
         renderDyslexiaMode(!!(data && data.dyslexiaMode))
+        renderTextEnlarge(textEnlarge)
         modeSelect.value = mode
         renderCalibration(data)
         renderPoseCalibration(data)
@@ -229,6 +239,29 @@ progressBarBtn.addEventListener('click', function () {
         })
     })
 })
+
+if (textEnlargeBtn) {
+    textEnlargeBtn.addEventListener('click', function () {
+        chrome.storage.local.get(['textEnlargeEnabled'], function (data) {
+            var current = !data || data.textEnlargeEnabled !== false
+            var next = !current
+            chrome.storage.local.set({ textEnlargeEnabled: next }, function () {
+                renderTextEnlarge(next)
+                sendToActiveTab({ type: 'NA_SET_TEXT_ENLARGE', textEnlargeEnabled: next }, function (ok) {
+                    if (!ok) {
+                        statusText.textContent = next
+                            ? 'Text Enlarge on. Open a normal webpage to apply.'
+                            : 'Text Enlarge off.'
+                    } else {
+                        statusText.textContent = next
+                            ? 'Text Enlarge on — dynamic type resumes on stress.'
+                            : 'Text Enlarge off — page text stays at its native size.'
+                    }
+                })
+            })
+        })
+    })
+}
 
 if (dyslexiaModeBtn) {
     dyslexiaModeBtn.addEventListener('click', function () {
