@@ -17,7 +17,7 @@ var CONFIG = {
     REGRESSION_WINDOW:             20,
     CALIBRATION_VERSION:           'iris_v2',
     POSE_CALIBRATION_VERSION:      'iris_pose_v1',
-    CALIBRATION_CLICKS_PER_POINT:  5,
+    CALIBRATION_CLICKS_PER_POINT:  1,
     VALIDATION_THRESHOLD_PX:       160,
     MAX_FORCED_RECALIBRATION_ATTEMPTS: 1,
     GAZE_SMOOTHING_FACTOR:         0.15,   // low-pass Î± â€” lower = smoother/slower
@@ -57,14 +57,19 @@ var ACCURACY_MODE = {
     },
 }
 
-// 5-point Princeton calibration wizard (TL â†’ TR â†’ Center â†’ BL â†’ BR)
-var CAL_POINTS_5 = [
-    { x: 5,  y: 5,  label: 'Top Left'     },
-    { x: 95, y: 5,  label: 'Top Right'    },
-    { x: 50, y: 50, label: 'Center'       },
-    { x: 5,  y: 95, label: 'Bottom Left'  },
-    { x: 95, y: 95, label: 'Bottom Right' },
-]
+// 25-point Princeton calibration wizard (5x5 grid)
+var CAL_POINTS_5 = (function () {
+    var coords = [5, 25, 50, 75, 95]
+    var pts = []
+    var idx = 1
+    for (var r = 0; r < coords.length; r++) {
+        for (var c = 0; c < coords.length; c++) {
+            pts.push({ x: coords[c], y: coords[r], label: 'Point ' + idx })
+            idx++
+        }
+    }
+    return pts
+})()
 
 // Legacy validation points (kept for popup display)
 var VALIDATION_POINTS = [
@@ -1302,7 +1307,7 @@ function createPrincetonOverlay() {
         '</div>',
         '<div id="na-cal-instruction" style="font-size:15px;color:#ccc;max-width:420px;line-height:1.6;">',
         '  Stare directly at each <b style="color:#E77500">orange dot</b>',
-        '  and click it <b style="color:#fff">5 times</b>.<br>',
+        '  and click it <b style="color:#fff">1 time</b>.<br>',
         '  Keep your head still throughout.',
         '</div>',
     ].join('')
