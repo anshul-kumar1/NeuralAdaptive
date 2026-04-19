@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+spectrum-server/node_modules/
+
+# Build artifacts
+dist/
+build/
+
+# Environment / secrets — NEVER commit these
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+spectrum-server/.env
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*

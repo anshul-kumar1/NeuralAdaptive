@@ -1,5 +1,6 @@
 var toggleBtn = document.getElementById('toggleBtn')
 var progressBarBtn = document.getElementById('progressBarBtn')
+var dyslexiaModeBtn = document.getElementById('dyslexiaModeBtn')
 var finishSessionBtn = document.getElementById('finishSessionBtn')
 var statusText = document.getElementById('statusText')
 var recalibrateBtn = document.getElementById('recalibrateBtn')
@@ -16,7 +17,20 @@ var mBlocked = document.getElementById('mBlocked')
 var sJitter = document.getElementById('sJitter')
 var sLineErr = document.getElementById('sLineErr')
 var sFalse = document.getElementById('sFalse')
+var dedalusKeyStatus = document.getElementById('dedalusKeyStatus')
+var dedalusApiKeyInput = document.getElementById('dedalusApiKeyInput')
+var dedalusSaveBtn = document.getElementById('dedalusSaveBtn')
+var dedalusClearBtn = document.getElementById('dedalusClearBtn')
 var livePollTimer = null
+
+function renderDedalusKeyStatus(hasKey) {
+    if (!dedalusKeyStatus) return
+    dedalusKeyStatus.textContent = hasKey
+        ? 'Status: key saved — AI simplify / summarize will work.'
+        : 'Status: no key — paste your Dedalus key below and click Save.'
+    dedalusKeyStatus.classList.toggle('dedalusOk', !!hasKey)
+    dedalusKeyStatus.classList.toggle('dedalusWarn', !hasKey)
+}
 
 function renderEnabled(enabled) {
     toggleBtn.textContent = enabled ? 'Turn OFF' : 'Turn ON'
@@ -32,6 +46,13 @@ function renderProgressBar(active) {
     progressBarBtn.textContent = active ? 'Reading Progress: ON' : 'Reading Progress: OFF'
     progressBarBtn.classList.toggle('enabled', active)
     progressBarBtn.setAttribute('aria-pressed', active ? 'true' : 'false')
+}
+
+function renderDyslexiaMode(active) {
+    if (!dyslexiaModeBtn) return
+    dyslexiaModeBtn.textContent = active ? 'Dyslexia Mode: ON' : 'Dyslexia Mode: OFF'
+    dyslexiaModeBtn.classList.toggle('enabled', active)
+    dyslexiaModeBtn.setAttribute('aria-pressed', active ? 'true' : 'false')
 }
 
 function renderCalibration(data) {
@@ -134,11 +155,15 @@ function pollMetrics() {
 }
 
 function readState() {
-    chrome.storage.local.get(['enabled', 'accuracyMode', 'calibrationMedianErrorPx', 'poseCalibrationQualityScore', 'readingProgress'], function (data) {
+    chrome.storage.local.get(['enabled', 'accuracyMode', 'calibrationMedianErrorPx', 'poseCalibrationQualityScore', 'readingProgress', 'dyslexiaMode', 'dedalusApiKey'], function (data) {
         var enabled = !!(data && data.enabled)
         var mode = data && data.accuracyMode ? data.accuracyMode : 'balanced'
+        var hasDedalus = !!(data && typeof data.dedalusApiKey === 'string' && data.dedalusApiKey.length > 0)
+        renderDedalusKeyStatus(hasDedalus)
+        if (dedalusApiKeyInput) dedalusApiKeyInput.value = ''
         renderEnabled(enabled)
         renderProgressBar(!!(data && data.readingProgress))
+        renderDyslexiaMode(!!(data && data.dyslexiaMode))
         modeSelect.value = mode
         renderCalibration(data)
         renderPoseCalibration(data)
@@ -204,6 +229,53 @@ progressBarBtn.addEventListener('click', function () {
         })
     })
 })
+
+if (dyslexiaModeBtn) {
+    dyslexiaModeBtn.addEventListener('click', function () {
+        chrome.storage.local.get(['dyslexiaMode'], function (data) {
+            var next = !(data && data.dyslexiaMode)
+            chrome.storage.local.set({ dyslexiaMode: next }, function () {
+                renderDyslexiaMode(next)
+                sendToActiveTab({ type: 'NA_SET_DYSLEXIA_MODE', dyslexiaMode: next }, function (ok) {
+                    if (!ok) {
+                        statusText.textContent = next
+                            ? 'Dyslexia Mode set. Open a normal webpage to apply.'
+                            : 'Dyslexia Mode off.'
+                    } else {
+                        statusText.textContent = next
+                            ? 'Dyslexia Mode on — accessible text preset applied.'
+                            : 'Dyslexia Mode off.'
+                    }
+                })
+            })
+        })
+    })
+}
+
+if (dedalusSaveBtn) {
+    dedalusSaveBtn.addEventListener('click', function () {
+        var raw = dedalusApiKeyInput ? dedalusApiKeyInput.value.trim() : ''
+        if (!raw) {
+            statusText.textContent = 'Paste your Dedalus API key before saving.'
+            return
+        }
+        chrome.storage.local.set({ dedalusApiKey: raw }, function () {
+            if (dedalusApiKeyInput) dedalusApiKeyInput.value = ''
+            renderDedalusKeyStatus(true)
+            statusText.textContent = 'Dedalus API key saved.'
+        })
+    })
+}
+
+if (dedalusClearBtn) {
+    dedalusClearBtn.addEventListener('click', function () {
+        chrome.storage.local.remove(['dedalusApiKey'], function () {
+            if (dedalusApiKeyInput) dedalusApiKeyInput.value = ''
+            renderDedalusKeyStatus(false)
+            statusText.textContent = 'Dedalus API key removed.'
+        })
+    })
+}
 
 modeSelect.addEventListener('change', function () {
     var mode = modeSelect.value

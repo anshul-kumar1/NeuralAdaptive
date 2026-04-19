@@ -185,11 +185,11 @@ async function postSessionSummary(payload) {
 
 // ── Dedalus (Claude) routing ──────────────────────────────────────────────────
 // Dedalus exposes an OpenAI-compatible chat completions endpoint. The API key
-// can live in code for development; for production set it via
-//   chrome.storage.local.set({ dedalusApiKey: '...' })
-// and it will override the constant below.
+// must be provisioned at runtime — NEVER check a real key into source. Set it
+// from the extension service-worker console with:
+//   chrome.storage.local.set({ dedalusApiKey: 'dsk-...' })
+// Requests without a configured key will throw and log a clear error.
 
-var DEDALUS_API_KEY = 'dsk-test-94af530a2791-b3bc6d4ca5fdcc568dce33e70df376a2'
 var DEDALUS_API_URL = 'https://api.dedaluslabs.ai/v1/chat/completions'
 var CLAUDE_MODEL    = 'anthropic/claude-haiku-4-5-20251001'
 
@@ -216,7 +216,7 @@ async function getDedalusKey() {
     } catch (err) {
         console.warn('[NeuralAdaptive] Could not read dedalusApiKey from storage:', err && err.message)
     }
-    return DEDALUS_API_KEY
+    return ''
 }
 
 async function callGemini(text) {
@@ -229,7 +229,12 @@ async function simplifyViaGemini(text) {
 
 async function callDedalus(systemPrompt, userPrompt, maxTokens, temperature) {
     var apiKey = await getDedalusKey()
-    if (!apiKey) throw new Error('Dedalus API key not configured')
+    if (!apiKey) {
+        throw new Error(
+            'Dedalus API key not configured. Open the NeuralAdaptive extension popup ' +
+            '(toolbar icon), paste your key under “Dedalus API key”, and click Save key.'
+        )
+    }
 
     var res = await fetch(DEDALUS_API_URL, {
         method: 'POST',

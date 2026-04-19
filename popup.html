@@ -21,6 +21,10 @@
       Reading Progress: OFF
     </button>
 
+    <button id="dyslexiaModeBtn" class="focus dyslexia" type="button" aria-pressed="false">
+      Dyslexia Mode: OFF
+    </button>
+
     <button id="finishSessionBtn" class="finish" type="button">
       Finish &amp; Text Summary
     </button>
@@ -37,6 +41,21 @@
       <option value="balanced">Balanced</option>
       <option value="precision">Precision</option>
     </select>
+
+    <section class="apiKeySection" aria-labelledby="apiKeyHeading">
+      <h2 id="apiKeyHeading" class="apiKeyHeading">Dedalus API key</h2>
+      <p id="dedalusKeyStatus" class="dedalusStatus">Checking…</p>
+      <input id="dedalusApiKeyInput" class="dedalusInput" type="password" autocomplete="off"
+        spellcheck="false" placeholder="Paste dsk-… key" aria-describedby="dedalusKeyHelp" />
+      <div class="dedalusRow">
+        <button id="dedalusSaveBtn" class="dedalusBtn" type="button">Save key</button>
+        <button id="dedalusClearBtn" class="dedalusBtn dedalusBtnGhost" type="button">Clear</button>
+      </div>
+      <p id="dedalusKeyHelp" class="dedalusHelp">
+        Needed for AI simplify / summarize. Get a key at
+        <a href="https://dedaluslabs.ai" target="_blank" rel="noopener noreferrer">dedaluslabs.ai</a>.
+      </p>
+    </section>
 
     <p id="statusText" class="status">Checking state...</p>
     <p id="calibrationText" class="calibration">Calibration: unknown</p>

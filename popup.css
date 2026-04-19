@@ -6,7 +6,7 @@ body {
 }
 
 .panel {
-  width: 260px;
+  width: 280px;
   padding: 14px;
 }
 
@@ -89,6 +89,23 @@ h1 {
   border-color: #E77500;
 }
 
+/* Dyslexia mode toggle uses a softer blue for accessibility tooling */
+.focus.dyslexia {
+  border-color: rgba(88, 166, 255, 0.45);
+  background: rgba(88, 166, 255, 0.08);
+  color: #58a6ff;
+}
+
+.focus.dyslexia:hover {
+  background: rgba(88, 166, 255, 0.16);
+}
+
+.focus.dyslexia.enabled {
+  background: linear-gradient(90deg, #2f81f7 0%, #58a6ff 100%);
+  color: #0d1117;
+  border-color: #2f81f7;
+}
+
 /* Finish Session — sends the iMessage summary via the Spectrum server */
 .finish {
   width: 100%;
@@ -158,6 +175,96 @@ h1 {
   font-size: 12px;
   background: #0d1117;
   color: #e6edf3;
+}
+
+.apiKeySection {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #30363d;
+}
+
+.apiKeyHeading {
+  margin: 0 0 6px 0;
+  font-size: 11px;
+  color: #9aa4af;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.dedalusStatus {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.dedalusStatus.dedalusOk {
+  color: #3fb950;
+}
+
+.dedalusStatus.dedalusWarn {
+  color: #E77500;
+}
+
+.dedalusInput {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  background: #161b22;
+  color: #e6edf3;
+}
+
+.dedalusInput::placeholder {
+  color: #6e7681;
+}
+
+.dedalusRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.dedalusBtn {
+  flex: 1;
+  border: 1px solid #58a6ff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: rgba(88, 166, 255, 0.12);
+  color: #58a6ff;
+}
+
+.dedalusBtn:hover {
+  background: rgba(88, 166, 255, 0.2);
+}
+
+.dedalusBtnGhost {
+  border-color: #30363d;
+  background: #161b22;
+  color: #8b949e;
+  font-weight: 500;
+}
+
+.dedalusBtnGhost:hover {
+  background: #21262d;
+  color: #e6edf3;
+}
+
+.dedalusHelp {
+  margin: 8px 0 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #6e7681;
+}
+
+.dedalusHelp a {
+  color: #58a6ff;
 }
 
 .calibration {

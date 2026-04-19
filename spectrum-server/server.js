@@ -61,9 +61,10 @@ const IMESSAGE_MODE = (process.env.IMESSAGE_MODE || "applescript").toLowerCase()
 
 // Dedalus (OpenAI-compatible) config. The extension already uses the same
 // endpoint for paragraph summarization; we reuse the same key pattern here.
-const DEDALUS_API_KEY =
-  process.env.DEDALUS_API_KEY ||
-  "dsk-test-94af530a2791-b3bc6d4ca5fdcc568dce33e70df376a2";
+// NEVER hardcode a real key — load exclusively from the environment. If it's
+// missing the coach-agent is skipped and the iMessage falls back to the
+// stats-only template (see composeIMessage).
+const DEDALUS_API_KEY = process.env.DEDALUS_API_KEY || "";
 const DEDALUS_API_URL = "https://api.dedaluslabs.ai/v1/chat/completions";
 const CLAUDE_MODEL =
   process.env.DEDALUS_MODEL || "anthropic/claude-haiku-4-5-20251001";

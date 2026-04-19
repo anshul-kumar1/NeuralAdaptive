@@ -806,6 +806,41 @@ function injectStyles() {
         '.na-overload p { line-height: 2.1 !important; letter-spacing: 0.12em !important; max-width: 66ch !important; transition: all 0.6s ease !important; }',
         '.na-sentence { transition: opacity 0.4s ease; display: inline; }',
 
+        // Dyslexia mode preset: higher readability defaults for dense passages.
+        'html.na-dyslexia-mode p,',
+        'html.na-dyslexia-mode li,',
+        'html.na-dyslexia-mode blockquote,',
+        'html.na-dyslexia-mode dd {',
+        '  font-family: "OpenDyslexic", "Lexend", "Atkinson Hyperlegible", "Arial", sans-serif !important;',
+        '  font-size: 1.08em !important;',
+        '  line-height: 1.72 !important;',
+        '  letter-spacing: 0.045em !important;',
+        '  word-spacing: 0.16em !important;',
+        '  text-rendering: optimizeLegibility !important;',
+        '  max-width: 72ch !important;',
+        '  color: #121212 !important;',
+        '  background: rgba(253, 247, 233, 0.76) !important;',
+        '  border-radius: 6px !important;',
+        '  padding: 0.1em 0.18em !important;',
+        '}',
+        'html.na-dyslexia-mode p + p,',
+        'html.na-dyslexia-mode li + li {',
+        '  margin-top: 0.55em !important;',
+        '}',
+        'html.na-dyslexia-mode h1,',
+        'html.na-dyslexia-mode h2,',
+        'html.na-dyslexia-mode h3,',
+        'html.na-dyslexia-mode h4 {',
+        '  font-family: "Atkinson Hyperlegible", "Lexend", "Arial", sans-serif !important;',
+        '  letter-spacing: 0.02em !important;',
+        '  line-height: 1.35 !important;',
+        '}',
+        'html.na-dyslexia-mode p,',
+        'html.na-dyslexia-mode li {',
+        '  hyphens: none !important;',
+        '  word-break: normal !important;',
+        '}',
+
         // ── Inline AI simplification (OVERLOAD tier) ─────────────────────────
         '.na-dim-surround p:not(.na-simplified) { opacity: 0.35 !important; filter: blur(0.3px); transition: opacity 0.6s ease, filter 0.6s ease !important; }',
         'p.na-simplified {',
@@ -2423,6 +2458,7 @@ var progressTotalParagraphs = 0
 var progressCachedRootSig = null
 var PROGRESS_POLL_MS = 500
 var PROGRESS_MIN_PARAGRAPHS = 3
+var dyslexiaModeActive = false
 
 function progressCollectParagraphs() {
     var root = findReadingContent()
@@ -2538,6 +2574,15 @@ function stopProgressBar() {
 function setProgressBar(active) {
     if (active) startProgressBar()
     else stopProgressBar()
+}
+
+function setDyslexiaMode(active) {
+    dyslexiaModeActive = !!active
+    injectStyles()
+    var root = document.documentElement
+    if (root) root.classList.toggle('na-dyslexia-mode', dyslexiaModeActive)
+    if (document.body) document.body.classList.toggle('na-dyslexia-mode', dyslexiaModeActive)
+    console.log('[NeuralAdaptive] Dyslexia mode:', dyslexiaModeActive ? 'ON' : 'OFF')
 }
 
 var TIER_RANK = { CALM: 0, ELEVATED: 1, OVERLOAD: 2 }
@@ -3059,6 +3104,7 @@ chrome.storage.onChanged.addListener(function (changes, areaName) {
     if (changes.accuracyMode) applyAccuracyMode(changes.accuracyMode.newValue)
     if (changes.na_flags) activeFlags = mergeFlags(changes.na_flags.newValue)
     if (changes.readingProgress) setProgressBar(!!changes.readingProgress.newValue)
+    if (changes.dyslexiaMode) setDyslexiaMode(!!changes.dyslexiaMode.newValue)
 })
 
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
@@ -3100,6 +3146,12 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     if (message.type === 'NA_SET_READING_PROGRESS') {
         setProgressBar(!!message.readingProgress)
         sendResponse({ ok: true, readingProgress: progressBarActive })
+        return
+    }
+
+    if (message.type === 'NA_SET_DYSLEXIA_MODE') {
+        setDyslexiaMode(!!message.dyslexiaMode)
+        sendResponse({ ok: true, dyslexiaMode: dyslexiaModeActive })
         return
     }
 
@@ -3249,7 +3301,7 @@ document.addEventListener('na-tracking-error', function (e) {
 // (when the UI is on) and the "paragraphs read" metric in the session summary.
 if (!progressLoopTimer) progressTick()
 
-chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgress'], function (data) {
+chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgress', 'dyslexiaMode'], function (data) {
     if (chrome.runtime.lastError) {
         console.warn('[NeuralAdaptive] storage unavailable in this frame:', chrome.runtime.lastError.message)
         return
@@ -3259,6 +3311,7 @@ chrome.storage.local.get(['enabled', 'accuracyMode', 'na_flags', 'readingProgres
     if (data && data.readingProgress) {
         startProgressBar()
     }
+    setDyslexiaMode(!!(data && data.dyslexiaMode))
     var enabled = !!(data && data.enabled)
     if (!enabled) {
         console.log('[NeuralAdaptive] Disabled by default. Use popup to enable.')
